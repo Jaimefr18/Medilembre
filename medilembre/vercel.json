@@ -23,8 +23,9 @@
       ]
     },
     "worker": {
-      "root": "apps/worker",
-      "runtime": "container"
+      "root": ".",
+      "runtime": "container",
+      "entrypoint": "Dockerfile.worker"
     }
   },
   "rewrites": [
