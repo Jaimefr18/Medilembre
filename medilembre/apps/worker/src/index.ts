@@ -1,8 +1,22 @@
+import { createServer } from "node:http";
 import { NOTIFICATION_TEXT } from "@medilembre/shared";
 import pg from "pg";
 import PgBoss from "pg-boss";
 import webpush from "web-push";
 import { enqueueDue, sendPending } from "./reminders.js";
+
+// Health check simples para o livenessProbe da Daemon
+let alive = true;
+
+createServer((req, res) => {
+  if (req.url === "/health") {
+    res.statusCode = alive ? 200 : 500;
+    res.end();
+  } else {
+    res.statusCode = 404;
+    res.end();
+  }
+}).listen(3001, "0.0.0.0");
 
 // O worker usa o utilizador admin: precisa de ver todas as farmácias (superuser/BYPASSRLS, ignora RLS).
 const url = process.env.DATABASE_URL_ADMIN ?? "";
@@ -68,3 +82,26 @@ await boss.work("tick", async () => {
   }
 });
 console.log("worker ativo: tick de 1 em 1 minuto");
+
+let shuttingDown = false;
+
+const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  alive = false; // faz o health check falhar para não receber novos pedidos
+  console.log(`${signal} recebido, a encerrar...`);
+  try {
+    await boss.stop({ graceful: true, timeout: 5000 });
+  } catch (e) {
+    console.error("pg-boss stop error", e);
+  }
+  try {
+    await pool.end();
+  } catch (e) {
+    console.error("pool end error", e);
+  }
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

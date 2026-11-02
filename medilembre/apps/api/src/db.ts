@@ -1,7 +1,7 @@
 import pg from "pg";
 import { env } from "./env.js";
 
-export const pool = new pg.Pool({ connectionString: env.databaseUrl, max: 10 });
+export const pool = new pg.Pool({ connectionString: env.databaseUrl, max: 2 });
 
 /**
  * Corre `fn` numa transação com app.pharmacy_id definido: o RLS filtra tudo por farmácia.
