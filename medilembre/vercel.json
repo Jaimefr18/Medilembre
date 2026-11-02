@@ -20,6 +20,12 @@
           "format": "url",
           "env": "API_URL"
         }
+      ],
+      "rewrites": [
+        {
+          "source": "/(.*)",
+          "destination": "/404.html"
+        }
       ]
     },
     "worker": {
