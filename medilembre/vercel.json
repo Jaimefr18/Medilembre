@@ -1,15 +1,17 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm --filter @medilembre/web build && pnpm --filter @medilembre/api build",
   "services": {
     "api": {
       "root": "apps/api",
-      "framework": "fastify"
+      "framework": "fastify",
+      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/api...",
+      "buildCommand": "pnpm build"
     },
     "web": {
       "root": "apps/web",
       "framework": "sveltekit-1",
+      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/web...",
+      "buildCommand": "pnpm build",
       "bindings": [
         {
           "type": "service",
