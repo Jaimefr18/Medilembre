@@ -1,0 +1,36 @@
+{
+  "name": "medilembre",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present dev",
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "node --env-file=.env scripts/db.mjs migrate",
+    "db:seed": "node --env-file=.env scripts/db.mjs seed",
+    "password:set": "node --env-file=.env scripts/set-password.mjs",
+    "vapid": "pnpm --filter @medilembre/worker exec web-push generate-vapid-keys",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "@capacitor/cli": "^8.5.2",
+    "@types/node": "^22.10.0",
+    "pg": "^8.13.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/local-notifications": "^8.3.1"
+  }
+}

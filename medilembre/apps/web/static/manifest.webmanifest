@@ -1,0 +1,10 @@
+{
+  "name": "MediLembre",
+  "short_name": "MediLembre",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7faf8",
+  "theme_color": "#237f72",
+  "lang": "pt-AO",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

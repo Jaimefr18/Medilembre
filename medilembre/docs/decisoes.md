@@ -1,0 +1,1 @@
+# Decisões (ADR curtas)

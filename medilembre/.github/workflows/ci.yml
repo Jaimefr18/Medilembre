@@ -1,0 +1,33 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: medilembre, POSTGRES_PASSWORD: medilembre, POSTGRES_DB: medilembre }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U medilembre" --health-interval 5s --health-retries 10
+    env:
+      APP_DB_PASSWORD: app
+      DATABASE_URL_ADMIN: postgres://medilembre:medilembre@localhost:5432/medilembre
+      DATABASE_URL: postgres://medilembre_app:app@localhost:5432/medilembre
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .node-version, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: node scripts/db.mjs migrate && node scripts/db.mjs seed
+      - run: pnpm test
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }

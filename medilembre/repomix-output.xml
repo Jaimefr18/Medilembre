@@ -1,0 +1,3000 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    ci.yml
+apps/
+  api/
+    src/
+      auth.ts
+      client.ts
+      db.ts
+      env.ts
+      index.ts
+      rls.test.ts
+    package.json
+    tsconfig.json
+  web/
+    src/
+      lib/
+        AddDialog.svelte
+        api.ts
+        data.svelte.ts
+        Head.svelte
+        Icon.svelte
+        icons.ts
+        local-notifications.ts
+        Nav.svelte
+        push.ts
+        session.svelte.ts
+        Tag.svelte
+        time.svelte.ts
+        Toast.svelte
+        toast.svelte.ts
+      routes/
+        (app)/
+          lembretes/
+            +page.svelte
+          perfil/
+            +page.svelte
+          reservas/
+            +page.svelte
+          +layout.svelte
+          +page.svelte
+        ativar/
+          +page.svelte
+        entrar/
+          +page.svelte
+        spike/
+          +page.svelte
+        +layout.svelte
+        +layout.ts
+      app.css
+      app.html
+      service-worker.ts
+    static/
+      icon.svg
+      manifest.webmanifest
+    package.json
+    svelte.config.js
+    tsconfig.json
+    vite.config.js
+  worker/
+    src/
+      index.ts
+      reminders.test.ts
+      reminders.ts
+    package.json
+    tsconfig.json
+db/
+  migrations/
+    0001_init.sql
+    0002_client_app.sql
+    0004_client_reminder_sends.sql
+  seed/
+    0003_seed_dev.sql
+    seed.sql
+docs/
+  decisoes.md
+infra/
+  docker-compose.yml
+packages/
+  core/
+    src/
+      index.ts
+      reminders.test.ts
+    package.json
+    tsconfig.json
+  shared/
+    src/
+      index.ts
+    package.json
+    tsconfig.json
+scripts/
+  db.mjs
+.biome.json
+.env.example
+.gitignore
+.node-version
+.npmrc
+biome.json
+capacitor.config.ts
+package.json
+pnpm-workspace.yaml
+README.md
+tsconfig.base.json
+vitest.config.ts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="apps/api/src/auth.ts">
+import "@fastify/cookie"; // tipos de req.cookies / reply.setCookie
+import { hash, verify } from "@node-rs/argon2";
+import { createHash, randomBytes } from "node:crypto";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import { pool } from "./db.js";
+import { env } from "./env.js";
+
+export const COOKIE = "ml_sid";
+const SESSION_DAYS = 30;
+
+export const sha = (s: string) => createHash("sha256").update(s, "utf8").digest();
+
+// argon2id com os parâmetros mínimos recomendados pela OWASP (19 MiB, t=2, p=1).
+export const hashPassword = (p: string) => hash(p, { memoryCost: 19456, timeCost: 2, parallelism: 1 });
+const DUMMY = await hashPassword("palavra-passe-falsa-para-igualar-tempos");
+
+/** Tempo de resposta igual exista o utilizador ou não (evita enumeração de contas). */
+export async function checkPassword(storedHash: string | undefined, password: string) {
+  const ok = await verify(storedHash ?? DUMMY, password).catch(() => false);
+  return Boolean(storedHash) && ok;
+}
+
+/** Telemóvel -> 244XXXXXXXXX; email -> minúsculas. */
+export function normIdentifier(raw: string) {
+  const s = raw.trim().toLowerCase();
+  if (s.includes("@")) return s;
+  const d = s.replace(/\D/g, "");
+  return d.length === 9 ? `244${d}` : d;
+}
+
+export const normCode = (raw: string) => raw.toUpperCase().replace(/[\s-]/g, "");
+
+type Q = { query: (sql: string, params?: unknown[]) => Promise<unknown> };
+
+export async function startSession(
+  q: Q,
+  reply: FastifyReply,
+  customerId: string,
+  pharmacyId: string,
+  userAgent?: string,
+) {
+  const token = randomBytes(32).toString("base64url");
+  await q.query(
+    `insert into client_sessions (id_hash, customer_id, pharmacy_id, user_agent, expires_at)
+     values ($1,$2,$3,$4, now() + make_interval(days => $5))`,
+    [sha(token), customerId, pharmacyId, userAgent ?? null, SESSION_DAYS],
+  );
+  reply.setCookie(COOKIE, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: env.production,
+    path: "/",
+    maxAge: SESSION_DAYS * 86400,
+  });
+}
+
+export async function endSession(req: FastifyRequest, reply: FastifyReply) {
+  const t = req.cookies[COOKIE];
+  if (t) await pool.query("delete from client_sessions where id_hash = $1", [sha(t)]);
+  reply.clearCookie(COOKIE, { path: "/" });
+}
+
+declare module "fastify" {
+  interface FastifyRequest {
+    me?: { customerId: string; pharmacyId: string };
+  }
+}
+
+export async function requireCustomer(req: FastifyRequest, reply: FastifyReply) {
+  const t = req.cookies[COOKIE];
+  if (!t) return reply.code(401).send({ error: "sessão em falta" });
+  const r = await pool.query(
+    "select customer_id, pharmacy_id from client_sessions where id_hash = $1 and expires_at > now()",
+    [sha(t)],
+  );
+  if (!r.rows[0]) {
+    reply.clearCookie(COOKIE, { path: "/" });
+    return reply.code(401).send({ error: "sessão expirada" });
+  }
+  req.me = { customerId: r.rows[0].customer_id, pharmacyId: r.rows[0].pharmacy_id };
+}
+
+/**
+ * Anti-CSRF: o cookie é SameSite=Lax; além disso, pedidos que alteram dados têm de trazer
+ * o cabeçalho x-ml (um formulário de outro site não o consegue enviar) e não podem ser cross-site.
+ */
+export async function csrfGuard(req: FastifyRequest, reply: FastifyReply) {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return;
+  if (req.headers["sec-fetch-site"] === "cross-site" || req.headers["x-ml"] !== "1") {
+    return reply.code(403).send({ error: "pedido recusado" });
+  }
+}
+</file>
+
+<file path="apps/api/src/client.ts">
+import { PushSubscriptionInput } from "@medilembre/shared";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import type pg from "pg";
+import { z } from "zod";
+import {
+  checkPassword, csrfGuard, endSession, hashPassword, normCode, normIdentifier,
+  requireCustomer, sha, startSession,
+} from "./auth.js";
+import { pool, withTenant, withTx } from "./db.js";
+import { env } from "./env.js";
+
+const TZ = "Africa/Luanda"; // TODO: passar para uma coluna `tz` em pharmacies (Maputo, Kinshasa)
+const TODAY = `(now() at time zone '${TZ}')::date`;
+
+const Id = z.object({ id: z.string().uuid() });
+const Password = z.string().min(8, "mínimo 8 caracteres").max(128);
+const Identifier = z.string().trim().min(5).max(120).transform(normIdentifier)
+  .refine((s) => s.includes("@") ? /^\S+@\S+\.\S+$/.test(s) : /^\d{9,15}$/.test(s), "telemóvel ou email inválido");
+
+const LoginInput = z.object({ identifier: Identifier, password: z.string().min(1).max(128) });
+const ActivateInput = z.object({
+  code: z.string().min(4).max(16).transform(normCode),
+  identifier: Identifier,
+  password: Password,
+});
+const ReminderInput = z.object({
+  name: z.string().trim().min(1).max(80),
+  dose: z.string().trim().max(80).default(""),
+  time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+});
+
+/** Corre `fn` com o RLS preso à farmácia E ao cliente da sessão. */
+const mine = <T>(req: FastifyRequest, fn: (c: pg.PoolClient, customerId: string) => Promise<T>) =>
+  withTenant(req.me!.pharmacyId, (c) => fn(c, req.me!.customerId), req.me!.customerId);
+
+const strict = { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } };
+
+export async function clientRoutes(app: FastifyInstance) {
+  app.addHook("onRequest", csrfGuard);
+
+  // ---------- Autenticação ----------
+  app.post("/auth/activate", strict, async (req, reply) => {
+    const b = ActivateInput.parse(req.body);
+    const out = await withTx(async (c) => {
+      const code = await c.query(
+        `select customer_id, pharmacy_id from activation_codes
+         where code_hash = $1 and used_at is null and expires_at > now() for update`,
+        [sha(b.code)],
+      );
+      if (!code.rows[0]) return null;
+      const { customer_id, pharmacy_id } = code.rows[0];
+      const taken = await c.query("select 1 from customer_logins where identifier = $1", [b.identifier]);
+      if (taken.rowCount) return "taken" as const;
+      await c.query(
+        "insert into customer_logins (customer_id, pharmacy_id, identifier, password_hash) values ($1,$2,$3,$4)",
+        [customer_id, pharmacy_id, b.identifier, await hashPassword(b.password)],
+      );
+      await c.query("update activation_codes set used_at = now() where code_hash = $1", [sha(b.code)]);
+      await startSession(c, reply, customer_id, pharmacy_id, req.headers["user-agent"]);
+      return { customer_id, pharmacy_id };
+    });
+    if (out === null) return reply.code(400).send({ error: "código inválido ou expirado" });
+    if (out === "taken") return reply.code(409).send({ error: "esse contacto já tem conta; use Entrar" });
+    return { ok: true };
+  });
+
+  app.post("/auth/login", strict, async (req, reply) => {
+    const b = LoginInput.parse(req.body);
+    const r = await pool.query(
+      "select customer_id, pharmacy_id, password_hash from customer_logins where identifier = $1",
+      [b.identifier],
+    );
+    const u = r.rows[0];
+    if (!(await checkPassword(u?.password_hash, b.password))) {
+      return reply.code(401).send({ error: "contacto ou senha incorretos" });
+    }
+    await startSession(pool, reply, u.customer_id, u.pharmacy_id, req.headers["user-agent"]);
+    return { ok: true };
+  });
+
+  app.post("/auth/logout", async (req, reply) => {
+    await endSession(req, reply);
+    return { ok: true };
+  });
+
+  // ---------- Tudo abaixo exige sessão ----------
+  await app.register(async (s) => {
+    s.addHook("preHandler", requireCustomer);
+
+    s.get("/auth/me", async (req) =>
+      mine(req, async (c, id) => {
+        const r = await c.query("select name from customers where id = $1", [id]);
+        return { name: r.rows[0]?.name ?? "" };
+      }),
+    );
+
+    // Lembretes
+    s.get("/reminders", async (req) =>
+      mine(req, async (c, id) =>
+        (await c.query(
+          `select r.id, to_char(r.at_time,'HH24:MI') as time, r.name, r.dose,
+                  exists (select 1 from dose_logs d where d.reminder_id = r.id and d.day = ${TODAY}) as done
+           from client_reminders r where r.customer_id = $1 and r.active order by r.at_time`,
+          [id],
+        )).rows,
+      ),
+    );
+
+    s.post("/reminders", async (req) => {
+      const b = ReminderInput.parse(req.body);
+      return mine(req, async (c, id) =>
+        (await c.query(
+          `insert into client_reminders (pharmacy_id, customer_id, name, dose, at_time)
+           values ($1,$2,$3,$4,$5)
+           returning id, to_char(at_time,'HH24:MI') as time, name, dose, false as done`,
+          [req.me!.pharmacyId, id, b.name, b.dose, b.time],
+        )).rows[0],
+      );
+    });
+
+    s.delete("/reminders/:id", async (req, reply) => {
+      const { id } = Id.parse(req.params);
+      const n = await mine(req, async (c, cid) =>
+        (await c.query("delete from client_reminders where id = $1 and customer_id = $2", [id, cid])).rowCount,
+      );
+      return n ? { ok: true } : reply.code(404).send({ error: "lembrete não encontrado" });
+    });
+
+    // Idempotente: tomar duas vezes no mesmo dia não duplica.
+    s.post("/reminders/:id/take", async (req, reply) => {
+      const { id } = Id.parse(req.params);
+      const found = await mine(req, async (c, cid) => {
+        const r = await c.query("select 1 from client_reminders where id = $1 and customer_id = $2", [id, cid]);
+        if (!r.rowCount) return false;
+        await c.query(
+          `insert into dose_logs (pharmacy_id, reminder_id, customer_id, day)
+           values ($1,$2,$3, ${TODAY}) on conflict (reminder_id, day) do nothing`,
+          [req.me!.pharmacyId, id, cid],
+        );
+        return true;
+      });
+      return found ? { ok: true } : reply.code(404).send({ error: "lembrete não encontrado" });
+    });
+
+    // Reservas
+    s.get("/products", async (req) =>
+      mine(req, async (c) =>
+        (await c.query("select id, name, pack from pharmacy_products where active order by name")).rows,
+      ),
+    );
+
+    s.get("/reservations", async (req) =>
+      mine(req, async (c, id) =>
+        (await c.query(
+          `select product_id, status from client_reservations
+           where customer_id = $1 and status in ('pendente','confirmada') order by created_at desc`,
+          [id],
+        )).rows,
+      ),
+    );
+
+    s.post("/reservations", async (req, reply) => {
+      const { productId } = z.object({ productId: z.string().uuid() }).parse(req.body);
+      const r = await mine(req, async (c, id) =>
+        c.query(
+          `insert into client_reservations (pharmacy_id, customer_id, product_id)
+           select pharmacy_id, $2, id from pharmacy_products where id = $1 and active
+           on conflict do nothing returning id`,
+          [productId, id],
+        ),
+      );
+      return r.rowCount ? { ok: true } : reply.code(409).send({ error: "produto indisponível ou já pedido" });
+    });
+
+    // Push (ligado ao cliente autenticado)
+    s.get("/push/vapid-key", async () => ({ key: env.vapidPublicKey }));
+
+    s.post("/push/subscribe", async (req) => {
+      const b = PushSubscriptionInput.parse(req.body);
+      await mine(req, async (c, id) =>
+        c.query(
+          `insert into client_push_subscriptions (pharmacy_id, customer_id, endpoint, p256dh, auth, user_agent)
+           values ($1,$2,$3,$4,$5,$6)
+           on conflict (endpoint) do update
+             set p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent`,
+          [req.me!.pharmacyId, id, b.endpoint, b.keys.p256dh, b.keys.auth, req.headers["user-agent"] ?? null],
+        ),
+      );
+      return { ok: true };
+    });
+
+    s.delete("/push/subscribe", async (req) => {
+      const { endpoint } = z.object({ endpoint: z.string().url() }).parse(req.body);
+      await mine(req, async (c, id) =>
+        c.query("delete from client_push_subscriptions where endpoint = $1 and customer_id = $2", [endpoint, id]),
+      );
+      return { ok: true };
+    });
+
+    // Privacidade: exportar e apagar os próprios dados.
+    s.get("/me/export", async (req) =>
+      mine(req, async (c, id) => {
+        const q = async (sql: string) => (await c.query(sql, [id])).rows;
+        return {
+          exportedAt: new Date().toISOString(),
+          customer: (await q("select name from customers where id = $1"))[0],
+          reminders: await q("select name, dose, at_time from client_reminders where customer_id = $1"),
+          doseLogs: await q("select reminder_id, day, taken_at from dose_logs where customer_id = $1"),
+          reservations: await q("select product_id, status, created_at from client_reservations where customer_id = $1"),
+        };
+      }),
+    );
+
+    s.delete("/me", async (req, reply) => {
+      const { customerId } = req.me!;
+      await mine(req, async (c, id) => {
+        for (const t of ["client_push_subscriptions", "dose_logs", "client_reservations", "client_reminders"]) {
+          await c.query(`delete from ${t} where customer_id = $1`, [id]);
+        }
+        await c.query("update customers set name = '(removido)' where id = $1", [id]);
+      });
+      await pool.query("delete from client_sessions where customer_id = $1", [customerId]);
+      await pool.query("delete from customer_logins where customer_id = $1", [customerId]);
+      reply.clearCookie("ml_sid", { path: "/" });
+      return { ok: true };
+    });
+  });
+}
+</file>
+
+<file path="apps/api/src/db.ts">
+import pg from "pg";
+import { env } from "./env.js";
+
+export const pool = new pg.Pool({ connectionString: env.databaseUrl, max: 10 });
+
+/**
+ * Corre `fn` numa transação com app.pharmacy_id definido: o RLS filtra tudo por farmácia.
+ * Com `customerId`, o RLS restringe também ao próprio cliente (app do cliente).
+ */
+export async function withTenant<T>(
+  pharmacyId: string,
+  fn: (c: pg.PoolClient) => Promise<T>,
+  customerId?: string,
+): Promise<T> {
+  return withTx(async (c) => {
+    // app.customer_id = "" (customerId undefined) significa "painel da farmácia": a política restritiva
+    // own_customer usa nullif(current_setting('app.customer_id', true), '') is null para deixar passar
+    // a farmácia inteira. Com customerId definido, o cliente só vê as suas próprias linhas.
+    await c.query("select set_config('app.pharmacy_id', $1, true), set_config('app.customer_id', $2, true)", [
+      pharmacyId,
+      customerId ?? "",
+    ]);
+    return fn(c);
+  });
+}
+
+/** Transação simples, sem tenant (tabelas de autenticação, que não têm RLS). */
+export async function withTx<T>(fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
+  const c = await pool.connect();
+  try {
+    await c.query("begin");
+    const result = await fn(c);
+    await c.query("commit");
+    return result;
+  } catch (e) {
+    await c.query("rollback");
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+</file>
+
+<file path="apps/api/src/env.ts">
+export const env = {
+  port: Number(process.env.PORT ?? 3000),
+  production: process.env.NODE_ENV === "production",
+  databaseUrl: process.env.DATABASE_URL ?? "",
+  vapidPublicKey: process.env.VAPID_PUBLIC_KEY ?? "",
+};
+</file>
+
+<file path="apps/api/src/index.ts">
+import { PushSubscriptionInput, SpikeScheduleInput } from "@medilembre/shared";
+import cookie from "@fastify/cookie";
+import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
+import Fastify from "fastify";
+import { z } from "zod";
+import { clientRoutes } from "./client.js";
+import { pool, withTenant } from "./db.js";
+import { env } from "./env.js";
+
+// trustProxy em produção: o rate limit tem de ver o IP real atrás do proxy/Cloudflare.
+const app = Fastify({ logger: true, trustProxy: env.production, bodyLimit: 64 * 1024 });
+
+// Sem `await`: assim as rotas herdam o setErrorHandler definido no fim do ficheiro.
+app.register(helmet);
+app.register(cookie);
+app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
+app.register(clientRoutes); // login, lembretes, reservas, push, privacidade
+
+app.get("/health", async () => {
+  await pool.query("select 1");
+  return { ok: true };
+});
+
+// ---------- Guard provisório do painel da farmácia (até haver login de farmácia) ----------
+// Em desenvolvimento aceita o cabeçalho x-pharmacy-id. Em produção recusa tudo.
+const Uuid = z.string().uuid();
+app.get("/customers", async (req, reply) => {
+  if (env.production) return reply.code(501).send({ error: "auth não implementada" });
+  const id = Uuid.safeParse(req.headers["x-pharmacy-id"]);
+  if (!id.success) return reply.code(401).send({ error: "farmácia em falta" });
+  return withTenant(id.data, async (c) => (await c.query("select id, name from customers")).rows);
+});
+
+// ---------- Spike de Web Push (só desenvolvimento: rotas públicas que escrevem na BD) ----------
+if (!env.production) {
+  app.get("/spike/vapid-key", async () => ({ key: env.vapidPublicKey }));
+
+  app.post("/spike/subscribe", async (req) => {
+    const body = PushSubscriptionInput.parse(req.body);
+    await pool.query(
+      `insert into spike_subscriptions (endpoint, p256dh, auth, user_agent) values ($1,$2,$3,$4)
+       on conflict (endpoint) do update set p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent`,
+      [body.endpoint, body.keys.p256dh, body.keys.auth, req.headers["user-agent"] ?? null],
+    );
+    return { ok: true };
+  });
+
+  app.post("/spike/schedule", async (req, reply) => {
+    const body = SpikeScheduleInput.parse(req.body);
+    const r = await pool.query(
+      `insert into spike_jobs (subscription_id, label, due_at)
+       select id, $2, now() + make_interval(mins => $3) from spike_subscriptions where endpoint = $1
+       returning id`,
+      [body.endpoint, body.label ?? `${body.minutes} min`, body.minutes],
+    );
+    if (r.rowCount === 0) return reply.code(404).send({ error: "subscrição desconhecida" });
+    return { ok: true };
+  });
+
+  app.get("/spike/jobs", async (req) => {
+    const { endpoint } = z.object({ endpoint: z.string().url() }).parse(req.query);
+    const r = await pool.query(
+      `select j.label, j.due_at, j.sent_at, j.result from spike_jobs j
+       join spike_subscriptions s on s.id = j.subscription_id
+       where s.endpoint = $1 order by j.due_at desc limit 30`,
+      [endpoint],
+    );
+    return r.rows;
+  });
+}
+
+app.setErrorHandler((err, _req, reply) => {
+  if (err instanceof z.ZodError) return reply.code(400).send({ error: err.flatten() });
+  const status = (err as { statusCode?: number }).statusCode;
+  if (status && status < 500) return reply.code(status).send({ error: err instanceof Error ? err.message : "erro desconhecido" });
+  app.log.error(err);
+  return reply.code(500).send({ error: "erro interno" });
+});
+
+await app.listen({ port: env.port, host: "0.0.0.0" });
+</file>
+
+<file path="apps/api/src/rls.test.ts">
+import { afterAll, describe, expect, it } from "vitest";
+import { pool, withTenant } from "./db";
+
+const ALFA = "11111111-1111-1111-1111-111111111111";
+const BETA = "22222222-2222-2222-2222-222222222222";
+const hasDb = Boolean(process.env.DATABASE_URL);
+
+describe.skipIf(!hasDb)("isolamento por farmácia (RLS)", () => {
+  afterAll(() => pool.end());
+
+  it("a farmácia A só vê os seus clientes", async () => {
+    const rows = await withTenant(
+      ALFA,
+      async (c) => (await c.query("select name from customers")).rows,
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.name.includes("(Alfa)"))).toBe(true);
+  });
+  it("a farmácia B nunca lê dados da A", async () => {
+    const rows = await withTenant(
+      BETA,
+      async (c) => (await c.query("select name from customers")).rows,
+    );
+    expect(rows.some((r) => r.name.includes("(Alfa)"))).toBe(false);
+  });
+  it("sem tenant definido não devolve nada", async () => {
+    expect((await pool.query("select * from customers")).rowCount).toBe(0);
+  });
+  it("não deixa escrever noutra farmácia", async () => {
+    await expect(
+      withTenant(ALFA, (c) =>
+        c.query("insert into customers (pharmacy_id, name) values ($1, 'intruso')", [BETA]),
+      ),
+    ).rejects.toThrow();
+  });
+});
+</file>
+
+<file path="apps/api/package.json">
+{
+  "name": "@medilembre/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "start": "tsx --env-file=../../.env src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/helmet": "^13.1.1",
+    "@fastify/rate-limit": "^11.2.0",
+    "@medilembre/core": "workspace:*",
+    "@medilembre/shared": "workspace:*",
+    "@node-rs/argon2": "^2.2.1",
+    "fastify": "^5.2.0",
+    "pg": "^8.13.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2"
+  }
+}
+</file>
+
+<file path="apps/api/tsconfig.json">
+{ "extends": "../../tsconfig.base.json", "include": ["src"] }
+</file>
+
+<file path="apps/web/src/lib/AddDialog.svelte">
+<script lang="ts">
+  import { addReminder } from "./data.svelte";
+  import { showToast } from "./toast.svelte";
+
+  let dlg: HTMLDialogElement;
+  let name = $state("");
+  let dose = $state("");
+  let time = $state("12:00");
+  let busy = $state(false);
+
+  export function open() {
+    name = "";
+    dose = "";
+    time = "12:00";
+    dlg.showModal();
+  }
+
+  async function save() {
+    if (!name.trim() || !time) return;
+    busy = true;
+    try {
+      await addReminder({ name: name.trim(), dose: dose.trim(), time });
+      dlg.close();
+    } catch (e) {
+      showToast((e as Error).message);
+    } finally {
+      busy = false;
+    }
+  }
+</script>
+
+<dialog bind:this={dlg}>
+  <h2>Novo lembrete</h2>
+  <label for="a1">Medicamento</label>
+  <div class="in"><input id="a1" bind:value={name} maxlength="80" placeholder="Ex.: Paracetamol" /></div>
+  <label for="a2">Dose</label>
+  <div class="in"><input id="a2" bind:value={dose} maxlength="80" placeholder="Ex.: 500 mg · 1 comprimido" /></div>
+  <label for="a3">Hora</label>
+  <div class="in"><input id="a3" type="time" bind:value={time} /></div>
+  <div style="display:flex;gap:10px;margin-top:20px">
+    <button class="sm" style="flex:1" onclick={() => dlg.close()}>Cancelar</button>
+    <button class="btn" style="flex:1;height:44px" disabled={busy || !name.trim()} onclick={save}>Guardar</button>
+  </div>
+</dialog>
+</file>
+
+<file path="apps/web/src/lib/api.ts">
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+/** fetch para /api com cookies de sessão. Nunca rebenta com "Unexpected token <": valida o JSON. */
+export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    method: init.method ?? "GET",
+    credentials: "same-origin",
+    headers: { "x-ml": "1", ...(init.body !== undefined ? { "content-type": "application/json" } : {}) },
+    body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+  });
+  const isJson = (res.headers.get("content-type") ?? "").includes("json");
+  const data = isJson ? await res.json() : null;
+  if (!isJson) throw new ApiError(res.status, "O servidor não respondeu como esperado (proxy /api em falta?)");
+  if (!res.ok) {
+    const e = (data as { error?: unknown })?.error;
+    throw new ApiError(res.status, typeof e === "string" ? e : "Dados inválidos");
+  }
+  return data as T;
+}
+
+export const isOffline = (e: unknown) => e instanceof TypeError; // fetch falhou: sem rede
+</file>
+
+<file path="apps/web/src/lib/data.svelte.ts">
+import { api, isOffline } from "./api";
+import { showToast } from "./toast.svelte";
+import { syncAlarms } from "./local-notifications";
+
+export type Reminder = { id: string; time: string; name: string; dose: string; done: boolean };
+export type Product = { id: string; name: string; pack: string };
+export type Reservation = { product_id: string; status: string };
+
+const CACHE = "ml:cache";
+const cached = (() => {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    return JSON.parse(localStorage.getItem(CACHE) ?? "null");
+  } catch {
+    return null;
+  }
+})();
+
+export const data = $state({
+  reminders: (cached?.reminders ?? []) as Reminder[],
+  products: (cached?.products ?? []) as Product[],
+  reservations: (cached?.reservations ?? []) as Reservation[],
+  loaded: false,
+});
+
+const persist = () => {
+  try {
+    localStorage.setItem(CACHE, JSON.stringify({ reminders: data.reminders, products: data.products, reservations: data.reservations }));
+  } catch {}
+};
+
+export async function loadAll() {
+  try {
+    const [r, p, v] = await Promise.all([
+      api<Reminder[]>("/reminders"),
+      api<Product[]>("/products"),
+      api<Reservation[]>("/reservations"),
+    ]);
+    data.reminders = r;
+    data.products = p;
+    data.reservations = v;
+    persist();
+  } catch (e) {
+    if (!isOffline(e)) showToast((e as Error).message);
+  }
+  data.loaded = true;
+  await syncAlarms(data.reminders);
+}
+
+export const sorted = () => data.reminders.slice().sort((a, b) => a.time.localeCompare(b.time));
+export const nextReminder = () => sorted().find((r) => !r.done);
+export const doneCount = () => data.reminders.filter((r) => r.done).length;
+
+export async function take(id: string) {
+  const r = data.reminders.find((x) => x.id === id);
+  if (!r) return;
+  r.done = true; // otimista
+  try {
+    await api(`/reminders/${id}/take`, { method: "POST" });
+    persist();
+    showToast(`Registado: ${r.name} tomado`);
+  } catch (e) {
+    r.done = false;
+    showToast(isOffline(e) ? "Sem ligação. Tente de novo." : (e as Error).message);
+  }
+}
+
+export async function addReminder(input: { name: string; dose: string; time: string }) {
+  const created = await api<Reminder>("/reminders", { method: "POST", body: input });
+  data.reminders.push(created);
+  persist();
+  await syncAlarms(data.reminders);
+}
+
+export async function removeReminder(id: string) {
+  await api(`/reminders/${id}`, { method: "DELETE" });
+  data.reminders = data.reminders.filter((r) => r.id !== id);
+  persist();
+  await syncAlarms(data.reminders);
+}
+
+export const reservationOf = (productId: string) => data.reservations.find((r) => r.product_id === productId);
+
+export async function reserve(productId: string) {
+  try {
+    await api("/reservations", { method: "POST", body: { productId } });
+    data.reservations = await api<Reservation[]>("/reservations");
+    persist();
+    showToast("Pedido enviado à farmácia");
+  } catch (e) {
+    showToast((e as Error).message);
+  }
+}
+</file>
+
+<file path="apps/web/src/lib/Head.svelte">
+<script lang="ts">
+  import { Capacitor } from "@capacitor/core";
+  import Icon from "./Icon.svelte";
+  import { enablePush } from "./push";
+  import { showToast } from "./toast.svelte";
+
+  const isNative = Capacitor.isNativePlatform();
+
+  async function bell() {
+    try {
+      const s = await enablePush();
+      showToast(
+        s === "granted" ? "Notificações ativadas" : s === "unsupported" ? "Este navegador não suporta notificações" : "Notificações não ativadas",
+      );
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  }
+</script>
+
+<div class="top">
+  <div class="logo"><i><Icon name="pill" /></i>Medilembre</div>
+  {#if !isNative}
+    <button class="bell" aria-label="Ativar notificações" onclick={bell}><Icon name="bell" /></button>
+  {/if}
+</div>
+</file>
+
+<file path="apps/web/src/lib/Icon.svelte">
+<script lang="ts">
+  import { icons } from "./icons";
+  let { name, style = "" }: { name: string; style?: string } = $props();
+</script>
+
+<svg viewBox="0 0 24 24" aria-hidden="true" {style}>{@html icons[name] ?? ""}</svg>
+</file>
+
+<file path="apps/web/src/lib/icons.ts">
+// Ícones do protótipo (conteúdo interno dos SVG; viewBox 24x24). Estático e confiável.
+export const icons: Record<string, string> = {
+  pill: '<path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21h4"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
+  clock: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M5 3 2 6M22 6l-3-3"/>',
+  box: '<path d="m21 8-9-5-9 5v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  phone: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+};
+export type IconName = keyof typeof icons;
+</file>
+
+<file path="apps/web/src/lib/local-notifications.ts">
+import { Capacitor } from "@capacitor/core";
+
+const CH = "medilembre-alarm";
+const native = () => Capacitor.isNativePlatform();
+
+function hashId(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) {
+    h = (h * 31 + id.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+export async function setupAlarms() {
+  if (!native()) return;
+  const { LocalNotifications: LN } = await import("@capacitor/local-notifications");
+  await LN.createChannel({
+    id: CH,
+    name: "Lembretes de medicação",
+    importance: 5,
+    vibration: true,
+  });
+}
+
+export async function syncAlarms(reminders: { id: string; time: string }[]) {
+  if (!native()) return;
+  const { LocalNotifications: LN } = await import("@capacitor/local-notifications");
+  const p = await LN.getPending();
+  if (p.notifications.length) await LN.cancel({ notifications: p.notifications });
+  await LN.schedule({
+    notifications: reminders.map((r) => {
+      const [hour, minute] = r.time.split(":").map(Number);
+      return {
+        id: hashId(r.id),
+        title: "MediLembre",
+        body: "Hora do seu lembrete",
+        channelId: CH,
+        schedule: { on: { hour, minute }, repeats: true, allowWhileIdle: true },
+      };
+    }),
+  });
+}
+
+export async function clearAlarms() {
+  if (!native()) return;
+  const { LocalNotifications: LN } = await import("@capacitor/local-notifications");
+  const p = await LN.getPending();
+  if (p.notifications.length) await LN.cancel({ notifications: p.notifications });
+}
+</file>
+
+<file path="apps/web/src/lib/Nav.svelte">
+<script lang="ts">
+  import { page } from "$app/state";
+  import Icon from "./Icon.svelte";
+
+  const tabs = [
+    ["/", "Início", "home"],
+    ["/lembretes", "Lembretes", "clock"],
+    ["/reservas", "Reservas", "box"],
+    ["/perfil", "Perfil", "user"],
+  ] as const;
+</script>
+
+<nav aria-label="Principal">
+  {#each tabs as [href, label, icon]}
+    {@const active = href === "/" ? page.url.pathname === "/" : page.url.pathname.startsWith(href)}
+    <a {href} class={active ? "a" : ""} aria-current={active ? "page" : undefined}>
+      <i><Icon name={icon} /></i>{label}
+    </a>
+  {/each}
+</nav>
+
+<style>
+  a { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 13px; color: var(--mut); padding: 4px 0; text-decoration: none; }
+  i { width: 56px; height: 34px; border-radius: 17px; display: grid; place-items: center; font-size: 21px; font-style: normal; }
+  .a { color: var(--ink); font-weight: 600; }
+  .a i { background: var(--tint); color: var(--pri); }
+</style>
+</file>
+
+<file path="apps/web/src/lib/push.ts">
+import { api } from "./api";
+
+export type PushState = "granted" | "denied" | "default" | "unsupported";
+
+export function pushState(): PushState {
+  if (typeof window === "undefined" || !("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return "unsupported";
+  }
+  return Notification.permission;
+}
+
+export function b64(s: string) {
+  const p = "=".repeat((4 - (s.length % 4)) % 4);
+  const raw = atob((s + p).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+/** Pede permissão, subscreve e regista a subscrição no cliente autenticado. */
+export async function enablePush(): Promise<PushState> {
+  if (pushState() === "unsupported") return "unsupported";
+  if ((await Notification.requestPermission()) !== "granted") return Notification.permission;
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await api<{ key: string }>("/push/vapid-key");
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(key) });
+  await api("/push/subscribe", { method: "POST", body: sub.toJSON() });
+  return "granted";
+}
+
+/** No logout: remove a subscrição deste dispositivo (best-effort). */
+export async function disablePush() {
+  try {
+    const reg = await navigator.serviceWorker?.ready;
+    const sub = await reg?.pushManager.getSubscription();
+    if (sub) {
+      await api("/push/subscribe", { method: "DELETE", body: { endpoint: sub.endpoint } });
+      await sub.unsubscribe();
+    }
+  } catch {}
+}
+</file>
+
+<file path="apps/web/src/lib/session.svelte.ts">
+import { api, isOffline } from "./api";
+import { clearAlarms } from "./local-notifications";
+
+export const session = $state<{ status: "loading" | "in" | "out"; name: string }>({
+  status: "loading",
+  name: "",
+});
+
+const KEY = "ml:name";
+
+export async function loadSession() {
+  try {
+    const me = await api<{ name: string }>("/auth/me");
+    session.name = me.name;
+    localStorage.setItem(KEY, me.name);
+    session.status = "in";
+  } catch (e) {
+    const cached = localStorage.getItem(KEY);
+    if (isOffline(e) && cached) {
+      session.name = cached; // PWA offline: mostra os últimos dados em cache
+      session.status = "in";
+    } else {
+      session.status = "out";
+    }
+  }
+}
+
+export async function clearLocal() {
+  await clearAlarms();
+  session.status = "out";
+  session.name = "";
+  localStorage.removeItem(KEY);
+  localStorage.removeItem("ml:cache");
+}
+</file>
+
+<file path="apps/web/src/lib/Tag.svelte">
+<script lang="ts">
+  import Icon from "./Icon.svelte";
+  let { state }: { state: "Tomado" | "Próximo" | "Agendado" } = $props();
+</script>
+
+<span class="tag" class:n={state === "Agendado"}>
+  {#if state === "Tomado"}<Icon name="check" style="width:12px;height:12px;vertical-align:-1px" />{/if}
+  {state}
+</span>
+</file>
+
+<file path="apps/web/src/lib/time.svelte.ts">
+export const clock = $state({ now: Date.now() });
+if (typeof window !== "undefined") setInterval(() => (clock.now = Date.now()), 30_000);
+
+/** Minutos até "HH:MM" de hoje (negativo se já passou). Lê clock.now para reagir ao tempo. */
+export function minsUntil(t: string) {
+  const [h, m] = t.split(":").map(Number);
+  const n = new Date(clock.now);
+  return h * 60 + m - (n.getHours() * 60 + n.getMinutes());
+}
+
+export function rel(t: string) {
+  const m = minsUntil(t);
+  if (m <= 0) return "Agora";
+  if (m < 60) return `Em ${m} min`;
+  return `Em ${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+}
+
+export function hello() {
+  const h = new Date(clock.now).getHours();
+  return h < 12 ? "Bom dia" : h < 19 ? "Boa tarde" : "Boa noite";
+}
+
+export function dateParts(): [string, string] {
+  const d = new Date(clock.now);
+  const day = new Intl.DateTimeFormat("pt-PT", { day: "numeric", month: "long" }).format(d);
+  const wd = new Intl.DateTimeFormat("pt-PT", { weekday: "long" }).format(d);
+  return [day, wd[0].toUpperCase() + wd.slice(1)];
+}
+</file>
+
+<file path="apps/web/src/lib/Toast.svelte">
+<script lang="ts">
+  import { toast } from "./toast.svelte";
+</script>
+
+{#if toast.msg}<div class="toast" role="status">{toast.msg}</div>{/if}
+</file>
+
+<file path="apps/web/src/lib/toast.svelte.ts">
+export const toast = $state({ msg: "" });
+let timer: ReturnType<typeof setTimeout> | undefined;
+
+export function showToast(msg: string) {
+  toast.msg = msg;
+  clearTimeout(timer);
+  timer = setTimeout(() => (toast.msg = ""), 2200);
+}
+</file>
+
+<file path="apps/web/src/routes/(app)/lembretes/+page.svelte">
+<script lang="ts">
+  import AddDialog from "$lib/AddDialog.svelte";
+  import Head from "$lib/Head.svelte";
+  import Icon from "$lib/Icon.svelte";
+  import Tag from "$lib/Tag.svelte";
+  import { data, doneCount, nextReminder, removeReminder, sorted, take } from "$lib/data.svelte";
+  import { showToast } from "$lib/toast.svelte";
+  import { dateParts } from "$lib/time.svelte";
+
+  let add: AddDialog;
+  let sub = $state<"hoje" | "todos">("hoje");
+  const n = $derived(nextReminder());
+  const [day, weekday] = $derived(dateParts());
+
+  async function del(id: string) {
+    if (!confirm("Remover este lembrete?")) return;
+    try {
+      await removeReminder(id);
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  }
+</script>
+
+<div class="scr">
+  <Head />
+  <h1 style="font-size:32px">Lembretes</h1>
+  <p class="mut" style="font-size:16px">Seu cuidado, um horário de cada vez.</p>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected={sub === "hoje"} class:a={sub === "hoje"} onclick={() => (sub = "hoje")}>Hoje</button>
+    <button role="tab" aria-selected={sub === "todos"} class:a={sub === "todos"} onclick={() => (sub = "todos")}>Todos os lembretes</button>
+  </div>
+
+  <div class="row"><h2>Hoje, {day}</h2><span class="mut" style="font-size:14px">{weekday}</span></div>
+  <div class="prog"><i style="width:{data.reminders.length ? (doneCount() / data.reminders.length) * 100 : 0}%"></i></div>
+  <div class="mut" style="text-align:right;font-size:13px;margin:-8px 0 12px">{doneCount()} de {data.reminders.length} tomados</div>
+
+  {#each sorted() as r (r.id)}
+    <div class="cardL" class:on={r.id === n?.id}>
+      <div class="row">
+        <span><b class="mut" style="font-size:20px">{r.time}</b> <span class="mut" style="font-size:13px">Todos os dias</span></span>
+        <Tag state={r.done ? "Tomado" : r.id === n?.id ? "Próximo" : "Agendado"} />
+      </div>
+      <div class="med">
+        <i><Icon name="pill" /></i>
+        <div><b>{r.name}</b><span>{r.dose || "—"}</span></div>
+        <button aria-label="Remover {r.name}" class="mut" style="margin-left:auto;font-size:22px" onclick={() => del(r.id)}>⋯</button>
+      </div>
+      {#if r.id === n?.id}<button class="btn" onclick={() => take(r.id)}><Icon name="check" /> Já tomei</button>{/if}
+    </div>
+  {/each}
+
+  <button class="add" onclick={() => add.open()}>+ Adicionar lembrete</button>
+</div>
+<AddDialog bind:this={add} />
+</file>
+
+<file path="apps/web/src/routes/(app)/perfil/+page.svelte">
+<script lang="ts">
+  import { Capacitor } from "@capacitor/core";
+  import { goto } from "$app/navigation";
+  import Head from "$lib/Head.svelte";
+  import { api } from "$lib/api";
+  import { clearLocal, session } from "$lib/session.svelte";
+  import { disablePush, enablePush, pushState, type PushState } from "$lib/push";
+  import { showToast } from "$lib/toast.svelte";
+
+  const isNative = Capacitor.isNativePlatform();
+
+  let ps = $state<PushState>(pushState());
+  const label: Record<PushState, string> = {
+    granted: "Ativadas",
+    denied: "Bloqueadas no navegador",
+    default: "Ainda não ativadas",
+    unsupported: "Não suportadas neste navegador",
+  };
+
+  async function activate() {
+    try {
+      ps = await enablePush();
+      showToast(ps === "granted" ? "Notificações ativadas" : "Notificações não ativadas");
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  }
+
+  async function logout() {
+    await disablePush();
+    await api("/auth/logout", { method: "POST" }).catch(() => {});
+    clearLocal();
+    await goto("/entrar", { replaceState: true });
+  }
+
+  async function exportData() {
+    try {
+      const d = await api("/me/export");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type: "application/json" }));
+      a.download = "medilembre-os-meus-dados.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  }
+
+  async function erase() {
+    if (!confirm("Apagar a sua conta e os seus lembretes? Esta ação não pode ser desfeita.")) return;
+    try {
+      await disablePush();
+      await api("/me", { method: "DELETE" });
+      clearLocal();
+      await goto("/entrar", { replaceState: true });
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  }
+</script>
+
+<div class="scr">
+  <Head />
+  <h1 style="font-size:32px">Perfil</h1>
+  <p class="mut" style="font-size:16px">{session.name}</p>
+
+  {#if !isNative}
+    <div class="box">
+      <div class="row">
+        <div><b>Notificações</b><div class="mut" style="font-size:14px">{label[ps]}</div></div>
+        <button class="sm" onclick={activate} disabled={ps === "granted" || ps === "unsupported"}>Ativar</button>
+      </div>
+    </div>
+  {/if}
+
+  <div class="box">
+    <b>Privacidade</b>
+    <p class="mut" style="font-size:14px;margin-top:4px">
+      Os seus dados de medicação só são usados para os lembretes e são partilhados apenas com a sua farmácia.
+      Pode exportar ou apagar tudo a qualquer momento.
+    </p>
+    <div class="row" style="margin-top:12px;gap:10px">
+      <button class="sm" onclick={exportData}>Exportar dados</button>
+      <button class="sm" onclick={erase}>Apagar conta</button>
+    </div>
+  </div>
+
+  <button class="add" style="margin-top:20px" onclick={logout}>Sair</button>
+</div>
+</file>
+
+<file path="apps/web/src/routes/(app)/reservas/+page.svelte">
+<script lang="ts">
+  import Head from "$lib/Head.svelte";
+  import Icon from "$lib/Icon.svelte";
+  import { data, reservationOf, reserve } from "$lib/data.svelte";
+</script>
+
+<div class="scr">
+  <Head />
+  <h1 style="font-size:32px">Reservas</h1>
+  <p class="mut" style="font-size:16px">Peça o seu medicamento antes de acabar.</p>
+
+  {#each data.products as p (p.id)}
+    {@const res = reservationOf(p.id)}
+    <div class="box">
+      <div class="med" style="margin:0"><i><Icon name="box" /></i><div><b>{p.name}</b><span>{p.pack}</span></div></div>
+      <div class="row" style="margin-top:10px">
+        <span class="mut" style="font-size:13px;max-width:55%">Consulte a disponibilidade na farmácia.</span>
+        {#if res}<span class="tag">{res.status === "confirmada" ? "Confirmada" : "Pendente"}</span>
+        {:else}<button class="sm" onclick={() => reserve(p.id)}>Reservar →</button>{/if}
+      </div>
+    </div>
+  {:else}
+    <p class="mut" style="margin-top:20px">A sua farmácia ainda não publicou medicamentos.</p>
+  {/each}
+</div>
+</file>
+
+<file path="apps/web/src/routes/(app)/+layout.svelte">
+<script lang="ts">
+  import { goto } from "$app/navigation";
+  import { onMount } from "svelte";
+  import Icon from "$lib/Icon.svelte";
+  import Nav from "$lib/Nav.svelte";
+  import { loadAll } from "$lib/data.svelte";
+  import { loadSession, session } from "$lib/session.svelte";
+  import { setupAlarms } from "$lib/local-notifications";
+
+  let { children } = $props();
+  let splash = $state(false);
+
+  onMount(async () => {
+    splash = sessionStorage.getItem("ml:splash") === "1";
+    const minSplash = new Promise((r) => setTimeout(r, splash ? 1500 : 0));
+    await loadSession();
+    if (session.status === "out") return goto("/entrar", { replaceState: true });
+    await Promise.all([loadAll(), minSplash, setupAlarms()]);
+    sessionStorage.removeItem("ml:splash");
+    splash = false;
+  });
+</script>
+
+<div class="shell">
+  {#if session.status !== "in" || splash}
+    <div class="scr splash" style="display:flex;flex-direction:column;align-items:center;padding-bottom:20px">
+      <div class="logo" style="margin-top:6px"><i><Icon name="pill" /></i>Medilembre</div>
+      <div class="arc"><div class="c"><Icon name="pill" /><br />Bem-vindo</div></div>
+      <b style="color:var(--pri);font-size:17px">Preparando seus lembretes</b>
+      <p class="c mut" style="font-size:16px;margin-top:8px">Estamos organizando sua rotina<br />de cuidado. Só um instante.</p>
+      <div class="safe" style="margin-top:auto"><Icon name="shield" />Seus dados tratados com segurança.</div>
+    </div>
+  {:else}
+    {@render children()}
+    <Nav />
+  {/if}
+</div>
+</file>
+
+<file path="apps/web/src/routes/(app)/+page.svelte">
+<script lang="ts">
+  import AddDialog from "$lib/AddDialog.svelte";
+  import Head from "$lib/Head.svelte";
+  import Icon from "$lib/Icon.svelte";
+  import Tag from "$lib/Tag.svelte";
+  import { data, doneCount, nextReminder, reservationOf, reserve, sorted, take } from "$lib/data.svelte";
+  import { session } from "$lib/session.svelte";
+  import { dateParts, hello, rel } from "$lib/time.svelte";
+
+  let add: AddDialog;
+  const n = $derived(nextReminder());
+  const [day, weekday] = $derived(dateParts());
+  const first = $derived(data.products[0]);
+</script>
+
+<div class="scr">
+  <Head />
+  <h1 style="font-size:32px">{hello()}, {session.name}</h1>
+  <p class="mut" style="font-size:16px">Um lembrete de cada vez. Vamos lá?</p>
+
+  {#if n}
+    <div class="next">
+      <small>
+        <span><Icon name="clock" style="vertical-align:-2px" /> Próximo lembrete</span>
+        <span style="color:var(--ink);font-weight:400">{rel(n.time)}</span>
+      </small>
+      <div class="med">
+        <i><Icon name="pill" /></i>
+        <div><b>{n.name}</b><span>{n.dose}</span></div>
+        <time>{n.time}</time>
+      </div>
+      <button class="btn" onclick={() => take(n.id)}><Icon name="check" /> Já tomei</button>
+    </div>
+  {:else}
+    <div class="next c">
+      <b>{data.reminders.length ? "Tudo tomado por hoje" : "Ainda não tem lembretes"}</b>
+      <p class="mut" style="font-size:15px">{data.reminders.length ? "Bom trabalho, até amanhã." : "Adicione o primeiro abaixo."}</p>
+    </div>
+  {/if}
+
+  <div class="row"><h2>Hoje, {day}</h2><span class="mut" style="font-size:14px">{weekday}</span></div>
+  <div class="prog"><i style="width:{data.reminders.length ? (doneCount() / data.reminders.length) * 100 : 0}%"></i></div>
+  <div class="mut" style="text-align:right;font-size:13px;margin:-8px 0 8px">{doneCount()} de {data.reminders.length} tomados</div>
+
+  <div class="list">
+    {#each sorted() as r (r.id)}
+      <div class="it" class:on={r.id === n?.id}>
+        <time>{r.time}</time>
+        <div class="m"><b>{r.name}</b><span class="s">{r.dose || "—"}</span></div>
+        <Tag state={r.done ? "Tomado" : r.id === n?.id ? "Próximo" : "Agendado"} />
+      </div>
+    {/each}
+  </div>
+
+  <button class="add" onclick={() => add.open()}>+ Adicionar lembrete</button>
+
+  {#if first}
+    <h2 style="margin-bottom:4px">Medicamentos disponíveis</h2>
+    <div class="box">
+      <div class="med" style="margin:0"><i><Icon name="box" /></i><div><b>{first.name}</b><span>{first.pack}</span></div></div>
+      <div class="row" style="margin-top:10px">
+        <span class="mut" style="font-size:13px;max-width:55%">Consulte a disponibilidade na farmácia.</span>
+        {#if reservationOf(first.id)}<span class="tag">Pendente</span>{:else}<button class="sm" onclick={() => reserve(first.id)}>Reservar →</button>{/if}
+      </div>
+    </div>
+  {/if}
+</div>
+<AddDialog bind:this={add} />
+</file>
+
+<file path="apps/web/src/routes/ativar/+page.svelte">
+<script lang="ts">
+  import { goto } from "$app/navigation";
+  import { onMount } from "svelte";
+  import { tick } from "svelte";
+  import Icon from "$lib/Icon.svelte";
+  import { api } from "$lib/api";
+
+  let code = $state("");
+  let identifier = $state("");
+  let password = $state("");
+  let err = $state("");
+  let busy = $state(false);
+  let scanning = $state(false);
+  let scanner: { stop(): Promise<void>; clear(): void } | null = null;
+
+  /** O QR pode conter só o código ou um link com ?c=CODIGO. */
+  function parse(text: string) {
+    try {
+      return new URL(text).searchParams.get("c") ?? text;
+    } catch {
+      return text;
+    }
+  }
+
+  onMount(() => {
+    const c = new URL(location.href).searchParams.get("c");
+    if (c) code = c.toUpperCase();
+    return stop;
+  });
+
+  async function start() {
+    err = "";
+    scanning = true;
+    await tick();
+    try {
+      const { Html5Qrcode } = await import("html5-qrcode");
+      const s = new Html5Qrcode("qr-reader");
+      scanner = s;
+      await s.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 220, height: 220 } },
+        (text) => {
+          code = parse(text).toUpperCase();
+          stop();
+        },
+        () => {},
+      );
+    } catch {
+      err = "Não foi possível abrir a câmara. Escreva o código manualmente.";
+      await stop();
+    }
+  }
+
+  async function stop() {
+    const s = scanner;
+    scanner = null;
+    scanning = false;
+    if (s) {
+      try {
+        await s.stop();
+        s.clear();
+      } catch {}
+    }
+  }
+
+  async function submit(e: SubmitEvent) {
+    e.preventDefault();
+    err = "";
+    busy = true;
+    try {
+      await api("/auth/activate", { method: "POST", body: { code, identifier, password } });
+      sessionStorage.setItem("ml:splash", "1");
+      await goto("/");
+    } catch (x) {
+      err = (x as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
+</script>
+
+<div class="shell">
+  <div class="scr">
+    <div class="c" style="display:flex;justify-content:center;margin-top:24px">
+      <div class="logo"><i><Icon name="pill" /></i>Medilembre</div>
+    </div>
+    <div class="c">
+      <h1 style="margin-top:22px">Criar a sua conta</h1>
+      <p class="mut" style="font-size:16px;margin-top:8px">Use o código que a sua farmácia lhe deu.</p>
+    </div>
+
+    {#if scanning}
+      <div id="qr-reader"></div>
+      <button class="add" style="margin-bottom:0" onclick={stop}>Cancelar</button>
+    {:else}
+      <button class="add" onclick={start}>Escanear QR da farmácia</button>
+    {/if}
+
+    <form onsubmit={submit}>
+      <label for="c">Código</label>
+      <div class="in"><Icon name="shield" /><input id="c" bind:value={code} autocapitalize="characters" maxlength="16" placeholder="Ex.: 8F72KQ" required /></div>
+      <label for="u">Número de telemóvel ou email</label>
+      <div class="in"><Icon name="phone" /><input id="u" bind:value={identifier} autocomplete="username" placeholder="Número de telemóvel ou email" required /></div>
+      <label for="p">Senha (mínimo 8 caracteres)</label>
+      <div class="in"><Icon name="lock" /><input id="p" type="password" bind:value={password} autocomplete="new-password" minlength="8" maxlength="128" required /></div>
+      {#if err}<p class="err" role="alert">{err}</p>{/if}
+      <button class="btn" style="margin-top:20px" disabled={busy}>Criar conta <Icon name="arrow" /></button>
+    </form>
+
+    <div class="c" style="margin-top:18px"><a class="link" href="/entrar">Já tenho conta</a></div>
+    <div class="safe"><Icon name="shield" />Seus dados tratados com segurança.</div>
+  </div>
+</div>
+</file>
+
+<file path="apps/web/src/routes/entrar/+page.svelte">
+<script lang="ts">
+  import { goto } from "$app/navigation";
+  import Icon from "$lib/Icon.svelte";
+  import { api } from "$lib/api";
+  import { showToast } from "$lib/toast.svelte";
+
+  let identifier = $state("");
+  let password = $state("");
+  let show = $state(false);
+  let err = $state("");
+  let busy = $state(false);
+
+  async function submit(e: SubmitEvent) {
+    e.preventDefault();
+    err = "";
+    busy = true;
+    try {
+      await api("/auth/login", { method: "POST", body: { identifier, password } });
+      sessionStorage.setItem("ml:splash", "1");
+      await goto("/");
+    } catch (x) {
+      err = (x as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
+</script>
+
+<div class="shell">
+  <div class="scr">
+    <div class="c" style="display:flex;justify-content:center;margin-top:24px">
+      <div class="logo"><i><Icon name="pill" /></i>Medilembre</div>
+    </div>
+    <div class="hero">
+      <div class="card">
+        <b><Icon name="clock" />Hora de se cuidar</b>
+        <div class="bar" style="width:80%"></div>
+        <div class="bar" style="width:55%;height:6px"></div>
+      </div>
+    </div>
+    <div class="c">
+      <h1 style="margin-top:14px">Que bom ter você aqui</h1>
+      <p class="mut" style="font-size:16px;margin-top:8px">Entre para cuidar da sua rotina,<br />um lembrete de cada vez.</p>
+    </div>
+
+    <form onsubmit={submit}>
+      <label for="u">Número de telemóvel ou email</label>
+      <div class="in"><Icon name="phone" /><input id="u" bind:value={identifier} autocomplete="username" inputmode="email" placeholder="Número de telemóvel ou email" required /></div>
+      <label for="p">Senha</label>
+      <div class="in">
+        <Icon name="lock" />
+        <input id="p" type={show ? "text" : "password"} bind:value={password} autocomplete="current-password" placeholder="Sua senha" required />
+        <button type="button" aria-label="Mostrar senha" onclick={() => (show = !show)}><Icon name="eye" /></button>
+      </div>
+      <div style="text-align:right;margin:14px 0 18px">
+        <button type="button" class="link" onclick={() => showToast("Peça a recuperação à sua farmácia")}>Esqueci minha senha</button>
+      </div>
+      {#if err}<p class="err" role="alert">{err}</p>{/if}
+      <button class="btn" disabled={busy}>Entrar <Icon name="arrow" /></button>
+    </form>
+
+    <p class="c mut" style="font-size:15px;margin-top:22px">Ainda não tem uma conta?</p>
+    <div class="c"><a class="link" style="font-size:18px;margin-top:4px;display:inline-block" href="/ativar">Criar minha conta</a></div>
+    <div class="safe"><Icon name="shield" />Seus dados tratados com segurança.</div>
+  </div>
+</div>
+</file>
+
+<file path="apps/web/src/routes/spike/+page.svelte">
+<script lang="ts">
+  // Spike de Web Push: ativar -> agendar -> ver o que o servidor aceitou.
+  // Anota em cada telefone: chegou? quando? apareceu no ecrã bloqueado?
+  type Job = { label: string; due_at: string; sent_at: string | null; result: string | null };
+
+  let msg = $state("");
+  let endpoint = $state("");
+  let jobs = $state<Job[]>([]);
+
+  const ios = /iphone|ipad/i.test(navigator.userAgent);
+  const standalone = matchMedia("(display-mode: standalone)").matches;
+
+  function b64(s: string) {
+    const p = "=".repeat((4 - (s.length % 4)) % 4);
+    const raw = atob((s + p).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+  }
+
+  async function enable() {
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        msg = "Este navegador não suporta Web Push.";
+        return;
+      }
+      if ((await Notification.requestPermission()) !== "granted") {
+        msg = "Permissão recusada.";
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      const { key } = await (await fetch("/api/spike/vapid-key")).json();
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(key) });
+      await fetch("/api/spike/subscribe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(sub.toJSON()),
+      });
+      endpoint = sub.endpoint;
+      msg = "Lembretes ativos neste telefone.";
+      await refresh();
+    } catch (e) {
+      msg = `Erro: ${(e as Error).message}`;
+    }
+  }
+
+  async function schedule(minutes: number) {
+    await fetch("/api/spike/schedule", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint, minutes }),
+    });
+    await refresh();
+  }
+
+  async function refresh() {
+    if (!endpoint) return;
+    jobs = await (await fetch(`/api/spike/jobs?endpoint=${encodeURIComponent(endpoint)}`)).json();
+  }
+
+  $effect(() => {
+    navigator.serviceWorker?.ready
+      .then((r) => r.pushManager.getSubscription())
+      .then((s) => {
+        if (s) {
+          endpoint = s.endpoint;
+          refresh();
+        }
+      });
+  });
+</script>
+
+<main>
+  <h1>MediLembre · teste de push</h1>
+  {#if ios && !standalone}
+    <p class="warn">No iPhone: toque em Partilhar → "Adicionar ao ecrã inicial" e abra a app a partir do ícone.</p>
+  {/if}
+  <button onclick={enable}>Ativar lembretes</button>
+  {#if endpoint}
+    <p>Agendar uma notificação daqui a:</p>
+    <div class="row">
+      {#each [1, 5, 30] as m}
+        <button onclick={() => schedule(m)}>{m} min</button>
+      {/each}
+      <button class="ghost" onclick={refresh}>Atualizar</button>
+    </div>
+  {/if}
+  <p aria-live="polite">{msg}</p>
+  <ul>
+    {#each jobs as j}
+      <li>
+        <b>{j.label}</b>: previsto {new Date(j.due_at).toLocaleTimeString("pt-PT")} —
+        {j.sent_at ? `enviado, ${j.result}` : "em espera"}
+      </li>
+    {/each}
+  </ul>
+</main>
+
+<style>
+  :global(body) { margin: 0; font: 18px/1.4 system-ui, sans-serif; background: #f7faf8; color: #1d3a34; }
+  main { max-width: 480px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 24px; font-weight: 500; }
+  button { font: inherit; background: #237f72; color: #fff; border: 0; border-radius: 14px; padding: 14px 20px; min-height: 52px; }
+  button.ghost { background: #e6f2ee; color: #237f72; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .warn { background: #fff3cd; padding: 12px; border-radius: 12px; }
+  li { margin: 8px 0; font-size: 16px; }
+</style>
+</file>
+
+<file path="apps/web/src/routes/+layout.svelte">
+<script lang="ts">
+  import "../app.css";
+  import Toast from "$lib/Toast.svelte";
+  let { children } = $props();
+</script>
+
+{@render children()}
+<Toast />
+</file>
+
+<file path="apps/web/src/routes/+layout.ts">
+export const ssr = false;
+export const prerender = true;
+</file>
+
+<file path="apps/web/src/app.css">
+:root{--bg:#f7faf8;--card:#fff;--ink:#1d3a34;--mut:#667c76;--pri:#237f72;--tint:#e6f2ee;--line:#dbe7e3;--page:#e9eeec;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1a18;--card:#16241f;--ink:#e3f0ec;--mut:#8da79f;--pri:#3aa897;--tint:#1b3530;--line:#26413a;--page:#0a1210}}
+:root[data-theme="dark"]{--bg:#0f1a18;--card:#16241f;--ink:#e3f0ec;--mut:#8da79f;--pri:#3aa897;--tint:#1b3530;--line:#26413a;--page:#0a1210}
+*{box-sizing:border-box;margin:0}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{background:var(--page);color:var(--ink);font:400 18px/1.4 Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;justify-content:center}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+button:focus-visible,input:focus-visible{outline:3px solid var(--pri);outline-offset:2px}
+.shell{width:100%;max-width:430px;min-height:100vh;background:var(--bg);position:relative;display:flex;flex-direction:column}
+@media(min-width:500px){.shell{margin:20px 0;min-height:860px;max-height:900px;border-radius:40px;overflow:hidden;box-shadow:0 10px 40px #0003}}
+.scr{flex:1;overflow-y:auto;padding:22px 20px 96px}
+.logo{display:flex;align-items:center;gap:10px;font-size:22px}
+.logo i{width:40px;height:40px;border-radius:12px;background:var(--pri);display:grid;place-items:center}
+svg{width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.logo svg{color:#fff;font-size:22px}
+.c{text-align:center}
+h1{font-weight:400;font-size:30px;line-height:1.15}
+.mut{color:var(--mut)}
+label{display:block;font-weight:600;font-size:16px;margin:18px 0 8px}
+.in{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;height:54px}
+.in input{flex:1;border:0;background:none;font:inherit;font-size:16px;color:var(--ink);min-width:0;height:100%}
+.in svg{color:var(--mut);font-size:20px}
+.btn{width:100%;height:56px;border-radius:14px;background:var(--pri);color:#fff;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
+.link{color:var(--pri);font-weight:600;font-size:16px}
+.hero{margin:18px auto 8px;width:230px;position:relative}
+.hero .card{background:var(--card);border-radius:16px;padding:14px;box-shadow:0 6px 18px #0002;transform:rotate(-3deg)}
+.hero b{font-size:15px;display:flex;gap:6px;align-items:center}
+.bar{height:8px;border-radius:4px;background:var(--tint);margin-top:10px}
+.safe{display:flex;gap:6px;align-items:center;justify-content:center;color:var(--mut);font-size:13px;margin-top:26px}
+.splash{align-items:center;justify-content:center}
+.arc{width:270px;height:135px;border-radius:135px 135px 0 0;border:6px solid var(--pri);border-bottom:0;background:var(--tint);display:grid;place-items:center;font-size:30px;margin:60px 0 36px;animation:fill 1.4s ease-out}
+@keyframes fill{from{opacity:.2}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.arc{animation:none}}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.bell{width:44px;height:44px;border-radius:12px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:20px}
+.next{background:var(--tint);border-radius:20px;padding:16px;margin:18px 0 24px}
+.next small{color:var(--pri);font-weight:600;display:flex;justify-content:space-between;font-size:15px}
+.med{display:flex;align-items:center;gap:12px;margin:12px 0}
+.med>i,.ic{width:48px;height:48px;border-radius:12px;background:var(--card);display:grid;place-items:center;color:var(--pri);font-size:22px;flex:none}
+.med b{display:block;font-size:19px}.med span{font-size:14px;color:var(--mut)}
+.med time{margin-left:auto;font-size:26px;font-weight:600}
+h2{font-size:22px;font-weight:600}
+.row{display:flex;justify-content:space-between;align-items:baseline}
+.prog{height:5px;background:var(--tint);border-radius:3px;margin:10px 0 14px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--pri);transition:width .4s}
+.list{background:var(--card);border:1px solid var(--line);border-radius:16px}
+.it{display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.it:last-child{border:0}
+.it.on{background:var(--tint)}
+.it time{width:52px;font-weight:600;color:var(--mut)}
+.it .m{flex:1}.it b{display:block;font-size:17px}.it span.s{font-size:13px;color:var(--mut)}
+.tag{font-size:13px;padding:3px 10px;border-radius:12px;background:var(--tint);color:var(--pri);font-weight:600;white-space:nowrap}
+.tag.n{background:var(--bg);color:var(--mut);border:1px solid var(--line)}
+.add{width:100%;margin:14px 0 26px;height:54px;border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--pri);font-weight:600;font-size:16px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:12px}
+.box .row{align-items:center;gap:12px}
+.sm{height:44px;padding:0 18px;border-radius:12px;background:var(--tint);color:var(--pri);font-weight:600;font-size:16px}
+.tabs{display:flex;background:var(--tint);border-radius:14px;padding:4px;margin:16px 0}
+.tabs button{flex:1;height:42px;border-radius:11px;font-size:16px;color:var(--mut)}
+.tabs .a{background:var(--card);color:var(--ink);font-weight:600}
+.cardL{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:12px}
+.cardL.on{background:var(--tint)}
+.cardL .row{align-items:center}
+.cardL .med{margin:10px 0 0}
+.cardL .btn{margin-top:12px;height:50px}
+nav{position:absolute;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px))}
+nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:13px;color:var(--mut);padding:4px 0}
+nav button i{width:56px;height:34px;border-radius:17px;display:grid;place-items:center;font-size:21px;font-style:normal}
+nav .a{color:var(--ink);font-weight:600}nav .a i{background:var(--tint);color:var(--pri)}
+dialog{border:0;border-radius:20px;padding:20px;width:min(380px,92vw);background:var(--card);color:var(--ink)}
+dialog::backdrop{background:#0007}
+.toast{position:fixed;left:50%;bottom:100px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:20px;font-size:15px;z-index:9}
+.hid{display:none!important}
+.err{color:#b3261e;font-size:15px;margin-top:12px}
+.mut-btn{color:var(--mut)}
+#qr-reader{width:100%;border-radius:14px;overflow:hidden;margin-top:12px}
+</file>
+
+<file path="apps/web/src/app.html">
+<!doctype html>
+<html lang="pt-AO">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#237f72" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" />
+    %sveltekit.head%
+  </head>
+  <body>%sveltekit.body%</body>
+</html>
+</file>
+
+<file path="apps/web/src/service-worker.ts">
+/// <reference types="@sveltejs/kit" />
+/// <reference no-default-lib="true"/>
+/// <reference lib="esnext" />
+/// <reference lib="webworker" />
+import { build, files, version } from "$service-worker";
+
+const sw = self as unknown as ServiceWorkerGlobalScope;
+const CACHE = `shell-${version}`;
+const SHELL = [...build, ...files];
+
+sw.addEventListener("install", (e) => {
+  e.waitUntil(
+    caches
+      .open(CACHE)
+      .then((c) => c.addAll(SHELL))
+      .then(() => sw.skipWaiting()),
+  );
+});
+sw.addEventListener("activate", (e) => {
+  e.waitUntil(
+    caches
+      .keys()
+      .then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => sw.clients.claim()),
+  );
+});
+// Casca em cache; a API vai sempre à rede.
+sw.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== "GET" || url.pathname.startsWith("/api")) return;
+  e.respondWith(caches.match(e.request).then((hit) => hit ?? fetch(e.request)));
+});
+
+// Notificação discreta no ecrã bloqueado.
+sw.addEventListener("push", (e) => {
+  const d = e.data?.json() ?? { title: "MediLembre", body: "Hora do seu lembrete" };
+  e.waitUntil(
+    sw.registration.showNotification(d.title, {
+      body: d.body,
+      icon: "/icon.svg",
+      tag: "lembrete",
+    } as NotificationOptions),
+  );
+});
+sw.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(sw.clients.openWindow("/"));
+});
+</file>
+
+<file path="apps/web/static/icon.svg">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="#237f72"/><g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round"><path d="m40 66 26-26a12 12 0 1 0-17-17L23 49a12 12 0 1 0 17 17Z"/><path d="m36 36 24 24"/></g></svg>
+</file>
+
+<file path="apps/web/static/manifest.webmanifest">
+{
+  "name": "MediLembre",
+  "short_name": "MediLembre",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7faf8",
+  "theme_color": "#237f72",
+  "lang": "pt-AO",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
+</file>
+
+<file path="apps/web/package.json">
+{
+  "name": "@medilembre/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --host",
+    "build": "vite build",
+    "check": "svelte-kit sync && svelte-check"
+  },
+  "dependencies": {
+    "@medilembre/shared": "workspace:*",
+    "html5-qrcode": "^2.3.8"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.8",
+    "@sveltejs/kit": "^2.15.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "svelte": "^5.16.0",
+    "svelte-check": "^4.1.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0"
+  }
+}
+</file>
+
+<file path="apps/web/svelte.config.js">
+import adapter from "@sveltejs/adapter-static";
+import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+
+export default {
+  preprocess: vitePreprocess(),
+  kit: { adapter: adapter({ fallback: "index.html" }) },
+};
+</file>
+
+<file path="apps/web/tsconfig.json">
+{
+  "extends": "./.svelte-kit/tsconfig.json",
+  "compilerOptions": { "allowJs": true, "checkJs": true, "strict": true, "skipLibCheck": true }
+}
+</file>
+
+<file path="apps/web/vite.config.js">
+import { sveltekit } from '@sveltejs/kit/vite';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [sveltekit()],
+  server: {
+    allowedHosts: ['.trycloudflare.com'],
+    proxy: {
+      // front chama /api/x -> Fastify recebe /x (o Fastify não tem prefixo /api)
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
+  },
+  // Sem build.rollupOptions.input: o SvelteKit gere as entradas. Os antigos index.html
+  // de cliente/farmacia/admin (React) partiam o build; o painel da farmácia e o admin
+  // passam a ser grupos de rotas deste mesmo projeto.
+});
+</file>
+
+<file path="apps/worker/src/index.ts">
+import { NOTIFICATION_TEXT } from "@medilembre/shared";
+import pg from "pg";
+import PgBoss from "pg-boss";
+import webpush from "web-push";
+import { enqueueDue, sendPending } from "./reminders.js";
+
+// O worker usa o utilizador admin: precisa de ver todas as farmácias (superuser/BYPASSRLS, ignora RLS).
+const url = process.env.DATABASE_URL_ADMIN ?? "";
+const pool = new pg.Pool({ connectionString: url, max: 4 });
+
+webpush.setVapidDetails(
+  process.env.VAPID_SUBJECT ?? "mailto:admin@example.com",
+  process.env.VAPID_PUBLIC_KEY ?? "",
+  process.env.VAPID_PRIVATE_KEY ?? "",
+);
+
+/** Spike: envia os jobs vencidos e regista o resultado (aceite pelo Push Service ou erro). */
+async function sendDueSpikeJobs() {
+  const { rows } = await pool.query(
+    `select j.id, s.id as sub_id, s.endpoint, s.p256dh, s.auth from spike_jobs j
+     join spike_subscriptions s on s.id = j.subscription_id
+     where j.sent_at is null and j.due_at <= now() limit 50`,
+  );
+  for (const r of rows) {
+    let result = "accepted";
+    try {
+      await webpush.sendNotification(
+        { endpoint: r.endpoint, keys: { p256dh: r.p256dh, auth: r.auth } },
+        JSON.stringify(NOTIFICATION_TEXT),
+        { TTL: 3600, urgency: "high" },
+      );
+    } catch (e) {
+      const status = (e as { statusCode?: number }).statusCode;
+      result = `error:${status ?? "?"}`;
+      if (status === 404 || status === 410) {
+        await pool.query("delete from spike_subscriptions where id = $1", [r.sub_id]);
+      }
+    }
+    await pool.query("update spike_jobs set sent_at = now(), result = $2 where id = $1", [
+      r.id,
+      result,
+    ]);
+  }
+  return rows.length;
+}
+
+/** Cada passo isolado: se um falhar, os outros continuam no mesmo tick. */
+async function step<T>(name: string, fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await fn();
+  } catch (e) {
+    console.error(`tick/${name}:`, e);
+    return undefined;
+  }
+}
+
+const boss = new PgBoss(url);
+boss.on("error", (e) => console.error("pg-boss", e));
+await boss.start();
+await boss.createQueue("tick");
+await boss.schedule("tick", "* * * * *");
+await boss.work("tick", async () => {
+  const queued = await step("enqueue", () => enqueueDue(pool));
+  const sent = await step("send", () => sendPending(pool));
+  const spike = await step("spike", sendDueSpikeJobs);
+  if (queued || spike || (sent && Object.values(sent).some(Boolean))) {
+    console.log(`tick: novos=${queued ?? "?"} envio=${JSON.stringify(sent)} spike=${spike ?? "?"}`);
+  }
+});
+console.log("worker ativo: tick de 1 em 1 minuto");
+</file>
+
+<file path="apps/worker/src/reminders.test.ts">
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { enqueueDue } from "./reminders.js";
+
+const url = process.env.DATABASE_URL_ADMIN;
+const ALFA = "11111111-1111-1111-1111-111111111111";
+
+// Luanda = UTC+1: 08:00 local = 07:00Z. Precisa de `pnpm db:migrate && pnpm db:seed`.
+describe.skipIf(!url)("enqueueDue (worker)", () => {
+  const pool = new pg.Pool({ connectionString: url, max: 2 });
+  let customerId = "";
+  let reminderId = "";
+  const sends = async () =>
+    Number(
+      (
+        await pool.query("select count(*) from client_reminder_sends where reminder_id = $1", [
+          reminderId,
+        ])
+      ).rows[0].count,
+    );
+
+  beforeAll(async () => {
+    customerId = (
+      await pool.query("select id from customers where pharmacy_id = $1 limit 1", [ALFA])
+    ).rows[0].id;
+    reminderId = (
+      await pool.query(
+        `insert into client_reminders (pharmacy_id, customer_id, name, at_time, created_at)
+         values ($1, $2, 'Teste worker', '08:00', '2026-01-01') returning id`,
+        [ALFA, customerId],
+      )
+    ).rows[0].id;
+  });
+  afterAll(async () => {
+    await pool.query("delete from client_reminders where id = $1", [reminderId]); // cascata limpa sends e logs
+    await pool.end();
+  });
+
+  it("cria o envio quando a hora local acabou de passar, uma só vez", async () => {
+    await enqueueDue(pool, new Date("2026-10-05T07:02:00Z"));
+    expect(await sends()).toBe(1);
+    await enqueueDue(pool, new Date("2026-10-05T07:03:00Z")); // tick seguinte
+    expect(await sends()).toBe(1);
+  });
+
+  it("não cria se ainda não é a hora", async () => {
+    await enqueueDue(pool, new Date("2026-10-06T06:59:00Z"));
+    expect(await sends()).toBe(1);
+  });
+
+  it("não envia lembretes com mais de 15 min de atraso", async () => {
+    await enqueueDue(pool, new Date("2026-10-06T07:20:00Z"));
+    expect(await sends()).toBe(1);
+  });
+
+  it("não cria se a dose do dia já foi tomada", async () => {
+    await pool.query(
+      "insert into dose_logs (pharmacy_id, reminder_id, customer_id, day) values ($1, $2, $3, '2026-10-07')",
+      [ALFA, reminderId, customerId],
+    );
+    await enqueueDue(pool, new Date("2026-10-07T07:01:00Z"));
+    expect(await sends()).toBe(1);
+  });
+});
+</file>
+
+<file path="apps/worker/src/reminders.ts">
+import { NOTIFICATION_TEXT } from "@medilembre/shared";
+import type pg from "pg";
+import webpush from "web-push";
+
+const MAX_ATTEMPTS = 4; // 1.ª tentativa + 3 retries (1, 2 e 4 min depois)
+const TTL_SECONDS = 1800; // o push morre no Push Service ao fim de 30 min
+const CATCH_UP = "15 minutes"; // tolerância se o worker esteve em baixo
+const EXPIRE_AFTER = "30 minutes"; // mais velho que isto já não faz sentido avisar
+
+/**
+ * Passo 1: cria um registo `pending` por cada lembrete que acabou de vencer (hora local da farmácia).
+ * Idempotente (unique reminder_id+day). Olha para hoje e ontem para não perder lembretes à meia-noite.
+ * Não envia se a dose já foi registada, nem lembretes criados depois da hora.
+ */
+export async function enqueueDue(pool: pg.Pool, at: Date = new Date()): Promise<number> {
+  const r = await pool.query(
+    `insert into client_reminder_sends (pharmacy_id, reminder_id, customer_id, day, due_at)
+     select r.pharmacy_id, r.id, r.customer_id, d.day, x.due_at
+     from client_reminders r
+     join pharmacies p on p.id = r.pharmacy_id
+     cross join generate_series(0, 1) as o
+     cross join lateral (select (($1::timestamptz at time zone p.timezone)::date - o) as day) d
+     cross join lateral (select ((d.day + r.at_time) at time zone p.timezone) as due_at) x
+     where r.active
+       and x.due_at <= $1::timestamptz
+       and x.due_at >  $1::timestamptz - interval '${CATCH_UP}'
+       and r.created_at <= x.due_at
+       and not exists (select 1 from dose_logs l where l.reminder_id = r.id and l.day = d.day)
+     on conflict (reminder_id, day) do nothing`,
+    [at],
+  );
+  return r.rowCount ?? 0;
+}
+
+type Claimed = {
+  id: string;
+  reminder_id: string;
+  customer_id: string;
+  day: string;
+  attempts: number;
+};
+type Sub = { id: string; endpoint: string; p256dh: string; auth: string };
+
+/**
+ * Passo 2: envia os `pending`. Ao reclamar cada linha já agenda o próximo retry com backoff
+ * (se o processo morrer a meio, a linha volta a ser tentada). SKIP LOCKED permite vários workers.
+ */
+export async function sendPending(pool: pg.Pool, at: Date = new Date()) {
+  const stats = { sent: 0, retry: 0, failed: 0, skipped: 0, noSub: 0, expired: 0 };
+
+  const exp = await pool.query(
+    `update client_reminder_sends set status = 'expired'
+     where status = 'pending' and due_at < $1::timestamptz - interval '${EXPIRE_AFTER}'`,
+    [at],
+  );
+  stats.expired = exp.rowCount ?? 0;
+
+  const { rows } = await pool.query<Claimed>(
+    `update client_reminder_sends s
+        set attempts = s.attempts + 1,
+            next_attempt_at = $1::timestamptz + make_interval(mins => power(2, s.attempts)::int)
+      where s.id in (
+        select id from client_reminder_sends
+        where status = 'pending' and next_attempt_at <= $1::timestamptz
+        order by due_at limit 100 for update skip locked)
+      returning s.id, s.reminder_id, s.customer_id, s.day::text as day, s.attempts`,
+    [at],
+  );
+
+  const finish = (id: string, status: string, err: string | null = null) =>
+    pool.query(
+      `update client_reminder_sends
+          set status = $2, last_error = $3, sent_at = case when $2 = 'sent' then now() else sent_at end
+        where id = $1`,
+      [id, status, err],
+    );
+
+  for (const row of rows) {
+    // Já tomou entretanto? Então não incomoda.
+    const taken = await pool.query(
+      "select 1 from dose_logs where reminder_id = $1 and day = $2::date",
+      [row.reminder_id, row.day],
+    );
+    if (taken.rowCount) {
+      await finish(row.id, "skipped");
+      stats.skipped++;
+      continue;
+    }
+
+    // Na app nativa (Android) não há subscrições push: os alarmes locais tratam do aviso.
+    const subs = (
+      await pool.query<Sub>(
+        "select id, endpoint, p256dh, auth from client_push_subscriptions where customer_id = $1",
+        [row.customer_id],
+      )
+    ).rows;
+    if (!subs.length) {
+      await finish(row.id, "no_subscription");
+      stats.noSub++;
+      continue;
+    }
+
+    const payload = JSON.stringify({
+      ...NOTIFICATION_TEXT,
+      tag: `lembrete-${row.reminder_id}`,
+      url: "/",
+    });
+    let ok = 0;
+    let transient: string | null = null;
+    for (const s of subs) {
+      try {
+        await webpush.sendNotification(
+          { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
+          payload,
+          {
+            TTL: TTL_SECONDS,
+            urgency: "high",
+          },
+        );
+        ok++;
+      } catch (e) {
+        const status = (e as { statusCode?: number }).statusCode;
+        if (status === 404 || status === 410) {
+          // Subscrição morta (app desinstalada / permissão revogada): limpa.
+          await pool.query("delete from client_push_subscriptions where id = $1", [s.id]);
+        } else {
+          transient = `error:${status ?? (e as Error).message}`.slice(0, 200);
+        }
+      }
+    }
+
+    if (ok > 0) {
+      await finish(row.id, "sent");
+      stats.sent++;
+    } else if (!transient) {
+      await finish(row.id, "no_subscription", "todas as subscrições expiradas");
+      stats.noSub++;
+    } else if (row.attempts >= MAX_ATTEMPTS) {
+      await finish(row.id, "failed", transient);
+      stats.failed++;
+    } else {
+      await pool.query("update client_reminder_sends set last_error = $2 where id = $1", [
+        row.id,
+        transient,
+      ]);
+      stats.retry++;
+    }
+  }
+  return stats;
+}
+</file>
+
+<file path="apps/worker/package.json">
+{
+  "name": "@medilembre/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "start": "tsx --env-file=../../.env src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@medilembre/shared": "workspace:*",
+    "@medilembre/core": "workspace:*",
+    "pg": "^8.13.1",
+    "pg-boss": "^10.1.5",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": { "@types/pg": "^8.11.10", "@types/web-push": "^3.6.4", "tsx": "^4.19.2" }
+}
+</file>
+
+<file path="apps/worker/tsconfig.json">
+{ "extends": "../../tsconfig.base.json", "include": ["src"] }
+</file>
+
+<file path="db/migrations/0001_init.sql">
+-- MediLembre: schema inicial + RLS por pharmacy_id
+create extension if not exists pgcrypto;
+
+do $$ begin
+  if not exists (select 1 from pg_roles where rolname = 'medilembre_app') then
+    create role medilembre_app login;
+  end if;
+end $$;
+
+create table pharmacies (
+  id uuid primary key default gen_random_uuid(),
+  name text not null, nif text, phone text,
+  status text not null default 'trial',
+  timezone text not null default 'Africa/Luanda',
+  created_at timestamptz not null default now()
+);
+
+-- pharmacy_users e sessions: consultadas no login, antes de existir tenant -> sem RLS (só o módulo auth lhes toca)
+create table pharmacy_users (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  name text not null, email text not null unique,
+  role text not null default 'pharmacist' check (role in ('admin','pharmacist')),
+  password_hash text not null
+);
+create table sessions (
+  id text primary key,
+  user_id uuid not null references pharmacy_users on delete cascade,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+create table customers (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  name text not null, phone text, email text,
+  status text not null default 'active'
+);
+create table medication_plans (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  customer_id uuid not null references customers on delete cascade,
+  start_date date not null, end_date date not null,
+  status text not null default 'rascunho'
+);
+create table plan_items (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  plan_id uuid not null references medication_plans on delete cascade,
+  medication text not null, dosage text,
+  schedule_rule text not null default 'daily',
+  times_local time[] not null
+);
+create table reminders (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  plan_item_id uuid not null references plan_items on delete cascade,
+  due_at_utc timestamptz not null,
+  status text not null default 'pending',
+  confirmed_at timestamptz,
+  unique (plan_item_id, due_at_utc)
+);
+create index reminders_due_idx on reminders (status, due_at_utc);
+create table activation_tokens (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  plan_id uuid not null references medication_plans on delete cascade,
+  token_hash text not null unique,
+  expires_at timestamptz not null, used_at timestamptz
+);
+create table consents (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  customer_id uuid not null references customers on delete cascade,
+  type text not null, granted boolean not null, granted_at timestamptz not null default now()
+);
+create table push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  customer_id uuid not null references customers on delete cascade,
+  endpoint text not null unique, p256dh text not null, auth text not null,
+  platform text, last_ok_at timestamptz
+);
+create table reservations (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  customer_id uuid not null references customers on delete cascade,
+  plan_id uuid references medication_plans,
+  status text not null default 'pending',
+  requested_at timestamptz not null default now(), decided_at timestamptz
+);
+create table delivery_logs (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  reminder_id uuid not null references reminders on delete cascade,
+  channel text not null, result text not null, attempted_at timestamptz not null default now()
+);
+create table audit_log (
+  id uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies on delete cascade,
+  actor text not null, action text not null, at timestamptz not null default now()
+);
+
+-- Spike de Web Push (dias 2-3). Sem dados pessoais; apagar depois do go/no-go.
+create table spike_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  endpoint text not null unique, p256dh text not null, auth text not null,
+  user_agent text, created_at timestamptz not null default now()
+);
+create table spike_jobs (
+  id uuid primary key default gen_random_uuid(),
+  subscription_id uuid not null references spike_subscriptions on delete cascade,
+  label text, due_at timestamptz not null, sent_at timestamptz, result text
+);
+
+-- RLS: a API define app.pharmacy_id por transação; sem isso, zero linhas.
+alter table pharmacies enable row level security;
+alter table pharmacies force row level security;
+create policy tenant on pharmacies
+  using (id = nullif(current_setting('app.pharmacy_id', true), '')::uuid);
+
+do $$
+declare t text;
+begin
+  foreach t in array array['customers','medication_plans','plan_items','reminders','activation_tokens',
+    'consents','push_subscriptions','reservations','delivery_logs','audit_log'] loop
+    execute format('alter table %I enable row level security', t);
+    execute format('alter table %I force row level security', t);
+    execute format($p$create policy tenant on %I
+      using (pharmacy_id = nullif(current_setting('app.pharmacy_id', true), '')::uuid)
+      with check (pharmacy_id = nullif(current_setting('app.pharmacy_id', true), '')::uuid)$p$, t);
+  end loop;
+end $$;
+
+grant usage on schema public to medilembre_app;
+grant select, insert, update, delete on all tables in schema public to medilembre_app;
+</file>
+
+<file path="db/migrations/0002_client_app.sql">
+-- MediLembre · app do cliente: login, sessões, lembretes, reservas, push.
+-- Requer 0001_init.sql (pharmacies, customers, role medilembre_app).
+-- Prefixo client_ APENAS nas 4 tabelas que colidiam com o 0001 (sessions, reminders,
+-- reservations, push_subscriptions). As restantes mantêm o nome: já são específicas do domínio.
+-- Sem "if not exists": se alguma tabela já existir, a migração deve falhar alto em vez de
+-- ficar calada com a definição antiga.
+
+-- Tabelas de autenticação: sem RLS (são lidas ANTES de saber a farmácia). Só guardam hashes.
+create table customer_logins (
+  customer_id   uuid primary key references customers(id) on delete cascade,
+  pharmacy_id   uuid not null references pharmacies(id),
+  identifier    text not null unique,            -- telemóvel normalizado (244...) ou email em minúsculas
+  password_hash text not null,                   -- argon2id
+  created_at    timestamptz not null default now()
+);
+
+create table client_sessions (
+  id_hash     bytea primary key,                 -- sha256 do token do cookie (o token nunca é guardado)
+  customer_id uuid not null references customers(id) on delete cascade,
+  pharmacy_id uuid not null,
+  user_agent  text,
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null
+);
+create index client_sessions_expires_idx on client_sessions (expires_at);
+
+create table activation_codes (
+  code_hash   bytea primary key,                 -- sha256 do código do QR
+  customer_id uuid not null references customers(id) on delete cascade,
+  pharmacy_id uuid not null,
+  expires_at  timestamptz not null,
+  used_at     timestamptz
+);
+
+-- Tabelas de dados: RLS por farmácia (+ por cliente quando a app do cliente corre).
+create table pharmacy_products (
+  id          uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies(id),
+  name        text not null,
+  pack        text not null default '',
+  active      boolean not null default true
+);
+
+-- Não confundir com `reminders` do 0001 (ligado a plan_items). Unificação adiada.
+create table client_reminders (
+  id          uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null references pharmacies(id),
+  customer_id uuid not null references customers(id) on delete cascade,
+  name        text not null check (length(name) between 1 and 80),
+  dose        text not null default '' check (length(dose) <= 80),
+  at_time     time not null,
+  active      boolean not null default true,
+  created_at  timestamptz not null default now()
+);
+create index client_reminders_customer_idx on client_reminders (customer_id, at_time);
+
+create table dose_logs (
+  id          uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null,
+  reminder_id uuid not null references client_reminders(id) on delete cascade,
+  customer_id uuid not null references customers(id) on delete cascade,
+  day         date not null,                     -- dia em Africa/Luanda
+  taken_at    timestamptz not null default now(),
+  unique (reminder_id, day)
+);
+
+-- Não confundir com `reservations` do 0001 (ligado a plan_id).
+create table client_reservations (
+  id          uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null,
+  customer_id uuid not null references customers(id) on delete cascade,
+  product_id  uuid not null references pharmacy_products(id),
+  status      text not null default 'pendente'
+              check (status in ('pendente','confirmada','recusada','cancelada')),
+  created_at  timestamptz not null default now()
+);
+create unique index client_reservations_open_idx
+  on client_reservations (customer_id, product_id) where status = 'pendente';
+
+-- Não confundir com `push_subscriptions` do 0001 (ligado a customer + plano da farmácia).
+create table client_push_subscriptions (
+  id          uuid primary key default gen_random_uuid(),
+  pharmacy_id uuid not null,
+  customer_id uuid not null references customers(id) on delete cascade,
+  endpoint    text not null unique,
+  p256dh      text not null,
+  auth        text not null,
+  user_agent  text,
+  created_at  timestamptz not null default now()
+);
+
+do $$
+declare t text;
+begin
+  foreach t in array array['pharmacy_products','client_reminders','dose_logs','client_reservations','client_push_subscriptions'] loop
+    execute format('alter table %I enable row level security', t);
+    execute format('alter table %I force row level security', t);
+    execute format($p$create policy tenant on %I
+      using (pharmacy_id = nullif(current_setting('app.pharmacy_id', true), '')::uuid)
+      with check (pharmacy_id = nullif(current_setting('app.pharmacy_id', true), '')::uuid)$p$, t);
+  end loop;
+  -- Restritiva: quando app.customer_id está definido, o cliente só vê as suas linhas.
+  -- O painel da farmácia (sem app.customer_id) continua a ver a farmácia toda.
+  foreach t in array array['client_reminders','dose_logs','client_reservations','client_push_subscriptions'] loop
+    execute format($p$create policy own_customer on %I as restrictive
+      using (nullif(current_setting('app.customer_id', true), '') is null
+             or customer_id = nullif(current_setting('app.customer_id', true), '')::uuid)$p$, t);
+  end loop;
+end $$;
+
+-- O grant do 0001 só cobriu as tabelas que existiam nesse momento. Sem isto, a API
+-- (role medilembre_app) falha com "permission denied for table ...".
+grant select, insert, update, delete on
+  customer_logins, client_sessions, activation_codes, pharmacy_products,
+  client_reminders, dose_logs, client_reservations, client_push_subscriptions
+to medilembre_app;
+</file>
+
+<file path="db/migrations/0004_client_reminder_sends.sql">
+-- MediLembre · envio de lembretes do cliente (um registo por lembrete e por dia).
+-- Escrito só pelo worker (role admin, que ignora RLS). A API (medilembre_app) não tem acesso:
+-- por isso não há GRANT. RLS fica ativa por defesa em profundidade.
+create table client_reminder_sends (
+  id              uuid primary key default gen_random_uuid(),
+  pharmacy_id     uuid not null references pharmacies(id),
+  reminder_id     uuid not null references client_reminders(id) on delete cascade,
+  customer_id     uuid not null references customers(id) on delete cascade,
+  day             date not null,                 -- dia local da farmácia
+  due_at          timestamptz not null,          -- instante exato (UTC) do lembrete
+  status          text not null default 'pending'
+                  check (status in ('pending','sent','failed','skipped','no_subscription','expired')),
+  attempts        int  not null default 0,
+  next_attempt_at timestamptz not null default now(),
+  last_error      text,
+  sent_at         timestamptz,
+  created_at      timestamptz not null default now(),
+  unique (reminder_id, day)                      -- idempotência: nunca duas vezes no mesmo dia
+);
+create index client_reminder_sends_pending_idx
+  on client_reminder_sends (next_attempt_at) where status = 'pending';
+
+alter table client_reminder_sends enable row level security;
+alter table client_reminder_sends force row level security;
+create policy tenant on client_reminder_sends
+  using (pharmacy_id = nullif(current_setting('app.pharmacy_id', true), '')::uuid)
+  with check (pharmacy_id = nullif(current_setting('app.pharmacy_id', true), '')::uuid);
+</file>
+
+<file path="db/seed/0003_seed_dev.sql">
+-- SÓ DESENVOLVIMENTO. Código de ativação de teste: 8F72KQ (cliente da farmácia Alfa).
+insert into activation_codes (code_hash, customer_id, pharmacy_id, expires_at)
+select sha256(convert_to('8F72KQ','UTF8')), id, pharmacy_id, now() + interval '30 days'
+from customers where name like '%(Alfa)%' order by name limit 1
+on conflict do nothing;
+
+insert into pharmacy_products (pharmacy_id, name, pack)
+select '11111111-1111-1111-1111-111111111111', v.n, v.p
+from (values ('Losartana 50 mg','Caixa com 30 comprimidos'),('Metformina 500 mg','Caixa com 60 comprimidos')) v(n,p)
+where not exists (select 1 from pharmacy_products where pharmacy_id = '11111111-1111-1111-1111-111111111111');
+</file>
+
+<file path="db/seed/seed.sql">
+insert into pharmacies (id, name, phone, timezone) values
+  ('11111111-1111-1111-1111-111111111111', 'Farmácia Alfa', '+244900000001', 'Africa/Luanda'),
+  ('22222222-2222-2222-2222-222222222222', 'Farmácia Beta', '+244900000002', 'Africa/Luanda')
+on conflict do nothing;
+insert into customers (id, pharmacy_id, name, phone) values
+  (gen_random_uuid(), '11111111-1111-1111-1111-111111111111', 'Ana (Alfa)', '+244911000001'),
+  (gen_random_uuid(), '11111111-1111-1111-1111-111111111111', 'Bento (Alfa)', '+244911000002'),
+  (gen_random_uuid(), '22222222-2222-2222-2222-222222222222', 'Carla (Beta)', '+244922000001'),
+  (gen_random_uuid(), '22222222-2222-2222-2222-222222222222', 'Davi (Beta)', '+244922000002');
+</file>
+
+<file path="docs/decisoes.md">
+# Decisões (ADR curtas)
+</file>
+
+<file path="infra/docker-compose.yml">
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: medilembre
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+</file>
+
+<file path="packages/core/src/index.ts">
+// Regras puras: sem frameworks, sem I/O. A parte mais testada do projeto.
+import { DateTime } from "luxon";
+
+export interface ReminderRule {
+  timesLocal: string[]; // "HH:mm" no fuso da farmácia
+  startDate: string; // "YYYY-MM-DD"
+  endDate: string;
+  zone: string; // IANA, ex.: "Africa/Luanda"
+  from?: Date; // início da janela (por defeito: agora)
+  days?: number; // tamanho da janela (por defeito: 7)
+}
+
+/** Gera as horas de lembrete em UTC dentro da janela e do período do plano. */
+export function generateReminders(rule: ReminderRule): Date[] {
+  const { timesLocal, startDate, endDate, zone, from = new Date(), days = 7 } = rule;
+  const now = DateTime.fromJSDate(from, { zone });
+  const planStart = DateTime.fromISO(startDate, { zone }).startOf("day").toMillis();
+  const planEnd = DateTime.fromISO(endDate, { zone }).endOf("day").toMillis();
+  const out: Date[] = [];
+  for (let i = 0; i < days; i++) {
+    const day = now.startOf("day").plus({ days: i });
+    if (day.toMillis() < planStart || day.toMillis() > planEnd) continue;
+    for (const t of timesLocal) {
+      const [hour, minute] = t.split(":").map(Number);
+      const due = day.set({ hour, minute, second: 0, millisecond: 0 });
+      if (due.toMillis() >= now.toMillis()) out.push(due.toUTC().toJSDate());
+    }
+  }
+  return out.sort((a, b) => a.getTime() - b.getTime());
+}
+
+export type PlanState =
+  | "rascunho"
+  | "aguarda_ativacao"
+  | "ativo"
+  | "a_terminar"
+  | "terminado"
+  | "cancelado";
+
+const TRANSITIONS: Record<PlanState, PlanState[]> = {
+  rascunho: ["aguarda_ativacao", "cancelado"],
+  aguarda_ativacao: ["ativo", "cancelado"],
+  ativo: ["a_terminar", "cancelado"],
+  a_terminar: ["ativo", "terminado", "cancelado"],
+  terminado: [],
+  cancelado: [],
+};
+
+export const canTransition = (from: PlanState, to: PlanState) => TRANSITIONS[from].includes(to);
+</file>
+
+<file path="packages/core/src/reminders.test.ts">
+import { describe, expect, it } from "vitest";
+import { canTransition, generateReminders } from "./index";
+
+const base = { zone: "Africa/Luanda", startDate: "2026-10-05", endDate: "2026-10-07" };
+const from = new Date("2026-10-05T00:00:00Z");
+
+describe("generateReminders", () => {
+  it("converte 08:00 de Luanda (UTC+1) para 07:00Z", () => {
+    const r = generateReminders({ ...base, timesLocal: ["08:00"], from });
+    expect(r[0].toISOString()).toBe("2026-10-05T07:00:00.000Z");
+  });
+  it("respeita o fim do plano", () => {
+    expect(generateReminders({ ...base, timesLocal: ["08:00", "20:00"], from })).toHaveLength(6);
+  });
+  it("ignora horas já passadas", () => {
+    const r = generateReminders({
+      ...base,
+      timesLocal: ["08:00"],
+      from: new Date("2026-10-06T10:00:00Z"),
+    });
+    expect(r.map((d) => d.toISOString())).toEqual(["2026-10-07T07:00:00.000Z"]);
+  });
+});
+
+describe("estados do plano", () => {
+  it("não deixa reativar um plano terminado", () => {
+    expect(canTransition("terminado", "ativo")).toBe(false);
+    expect(canTransition("aguarda_ativacao", "ativo")).toBe(true);
+  });
+});
+</file>
+
+<file path="packages/core/package.json">
+{
+  "name": "@medilembre/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": { "luxon": "^3.5.0" },
+  "devDependencies": { "@types/luxon": "^3.4.2" }
+}
+</file>
+
+<file path="packages/core/tsconfig.json">
+{ "extends": "../../tsconfig.base.json", "include": ["src"] }
+</file>
+
+<file path="packages/shared/src/index.ts">
+import { z } from "zod";
+
+export const TimeHHmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+
+export const PlanItemInput = z.object({
+  medication: z.string().min(1).max(120),
+  dosage: z.string().max(120).optional(),
+  timesLocal: z.array(TimeHHmm).min(1).max(8),
+});
+
+export const PushSubscriptionInput = z.object({
+  endpoint: z.string().url(),
+  keys: z.object({ p256dh: z.string(), auth: z.string() }),
+});
+
+export const SpikeScheduleInput = z.object({
+  endpoint: z.string().url(),
+  minutes: z
+    .number()
+    .min(0)
+    .max(24 * 60),
+  label: z.string().max(80).optional(),
+});
+
+// Notificação discreta: o detalhe só aparece ao abrir a app.
+export const NOTIFICATION_TEXT = { title: "MediLembre", body: "Hora do seu lembrete" } as const;
+</file>
+
+<file path="packages/shared/package.json">
+{
+  "name": "@medilembre/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": { "zod": "^3.24.1" }
+}
+</file>
+
+<file path="packages/shared/tsconfig.json">
+{ "extends": "../../tsconfig.base.json", "include": ["src"] }
+</file>
+
+<file path="scripts/db.mjs">
+// Uso: node --env-file=.env scripts/db.mjs migrate|seed
+import { readFileSync, readdirSync } from "node:fs";
+import pg from "pg";
+
+const cmd = process.argv[2];
+const client = new pg.Client({ connectionString: process.env.DATABASE_URL_ADMIN });
+await client.connect();
+try {
+  if (cmd === "migrate") {
+    await client.query(
+      "create table if not exists _migrations (name text primary key, at timestamptz default now())",
+    );
+    const done = new Set(
+      (await client.query("select name from _migrations")).rows.map((r) => r.name),
+    );
+    for (const f of readdirSync("db/migrations")
+      .filter((f) => f.endsWith(".sql"))
+      .sort()) {
+      if (done.has(f)) continue;
+      await client.query("begin");
+      await client.query(readFileSync(`db/migrations/${f}`, "utf8"));
+      await client.query("insert into _migrations (name) values ($1)", [f]);
+      await client.query("commit");
+      console.log("aplicada:", f);
+    }
+    const pw = (process.env.APP_DB_PASSWORD ?? "app").replaceAll("'", "''");
+    await client.query(`alter role medilembre_app password '${pw}'`);
+  } else if (cmd === "seed") {
+    await client.query(readFileSync("db/seed/seed.sql", "utf8"));
+    console.log("seed ok");
+  } else {
+    console.error("comando: migrate | seed");
+    process.exit(1);
+  }
+} finally {
+  await client.end();
+}
+</file>
+
+<file path=".biome.json">
+{
+  "$schema": "https://biomejs.dev/schemas/1.6.1/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "indentSize": 2
+  }
+}
+</file>
+
+<file path=".gitignore">
+node_modules
+.env
+.svelte-kit
+build
+dist
+*.log
+</file>
+
+<file path=".node-version">
+22
+</file>
+
+<file path=".npmrc">
+block-exotic-subdeps=false
+</file>
+
+<file path="biome.json">
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "files": { "ignore": ["**/*.svelte", ".svelte-kit", "build", "dist", "node_modules"] },
+  "organizeImports": { "enabled": true },
+  "linter": { "enabled": true, "rules": { "recommended": true } },
+  "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 }
+}
+</file>
+
+<file path="capacitor.config.ts">
+import { CapacitorConfig } from "@capacitor/cli";
+
+const config: CapacitorConfig = {
+  appId: "com.medilembre.app",
+  appName: "MediLembre",
+  webDir: "apps/web/build",
+  server: {
+    url: "https://your-tunnel-url.trycloudflare.com",
+    cleartext: true,
+  },
+  android: {
+    permissions: ["SCHEDULE_EXACT_ALARM", "POST_NOTIFICATIONS", "RECEIVE_BOOT_COMPLETED"],
+    allowMixedContent: true,
+  },
+  plugins: {
+    LocalNotifications: {
+      smallIcon: "ic_stat_icon",
+      iconColor: "#237f72",
+    },
+  },
+};
+
+export default config;
+</file>
+
+<file path="package.json">
+{
+  "name": "medilembre",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present dev",
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "node --env-file=.env scripts/db.mjs migrate",
+    "db:seed": "node --env-file=.env scripts/db.mjs seed",
+    "vapid": "pnpm --filter @medilembre/worker exec web-push generate-vapid-keys",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "@capacitor/cli": "^8.5.2",
+    "@types/node": "^22.10.0",
+    "pg": "^8.13.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/local-notifications": "^8.3.1"
+  }
+}
+</file>
+
+<file path="pnpm-workspace.yaml">
+packages:
+  - "apps/*"
+  - "packages/*"
+</file>
+
+<file path="README.md">
+# MediLembre
+
+PWA + API + worker + PostgreSQL (RLS por farmácia). Ver `docs/` e o plano de 28 dias.
+
+## Arrancar (Ubuntu 24.04)
+
+```bash
+corepack enable && corepack prepare pnpm@9.15.0 --activate   # Node 22 (fnm/mise) já instalado
+cp .env.example .env
+pnpm install
+pnpm db:up && pnpm db:migrate && pnpm db:seed
+pnpm vapid          # cola as chaves em .env (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY)
+pnpm dev            # web :5173, api :3000, worker
+pnpm test           # core + isolamento RLS (precisa da BD)
+```
+
+## Dias 2-3: spike de Web Push no telemóvel
+Service Worker e Push exigem HTTPS. Com `pnpm dev` a correr:
+
+```bash
+cloudflared tunnel --url http://localhost:5173
+```
+
+Abre o URL `https://….trycloudflare.com` no telemóvel, toca em "Ativar lembretes" e agenda 1, 5 e 30 min.
+Testa: Chrome Android, Samsung Internet, Safari iPhone (ecrã inicial), poupança de bateria, ecrã bloqueado,
+sem rede 30 min. Regista % entregue, atraso e se aparece no ecrã bloqueado. O worker envia a cada minuto,
+por isso o atraso mínimo é até 60 s.
+
+## Estrutura
+- `apps/web` SvelteKit (SPA estática) + service worker · `apps/api` Fastify · `apps/worker` pg-boss + web-push
+- `packages/core` regras puras (lembretes, fusos, estados) · `packages/shared` schemas zod
+- `db/migrations` SQL com RLS · `scripts/db.mjs` migrações e seed
+
+## Notas importantes
+- A API liga como `medilembre_app` (sujeita a RLS); migrações e worker usam o admin. Nunca ligar a API como admin.
+- O guard de tenant atual (`x-pharmacy-id`) é só de desenvolvimento e recusa em produção; o dia 5 substitui-o por sessões.
+- Ainda não incluídos: Drizzle, Tailwind, painel da farmácia, QR, Caddy/deploy (entram nos dias 4, 8, 14).
+</file>
+
+<file path="tsconfig.base.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["node"]
+  }
+}
+</file>
+
+<file path="vitest.config.ts">
+import { loadEnv } from "vite";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    env: loadEnv("test", process.cwd(), ""),
+    include: ["**/*.test.ts"],
+    exclude: ["**/node_modules/**", "**/.svelte-kit/**"],
+  },
+});
+</file>
+
+</files>
