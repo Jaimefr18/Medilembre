@@ -13,14 +13,6 @@
       "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/web...",
       "buildCommand": "pnpm build",
       "outputDirectory": "build",
-      "bindings": [
-        {
-          "type": "service",
-          "service": "api",
-          "format": "url",
-          "env": "API_URL"
-        }
-      ],
       "rewrites": [
         {
           "source": "/(.*)",
