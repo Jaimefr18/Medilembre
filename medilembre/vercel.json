@@ -3,12 +3,25 @@
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm --filter @medilembre/web build && pnpm --filter @medilembre/api build",
   "services": {
-    "web": {
-      "root": "apps/web"
-    },
     "api": {
       "root": "apps/api",
-      "entrypoint": "src/index.ts"
+      "framework": "fastify"
+    },
+    "web": {
+      "root": "apps/web",
+      "framework": "sveltekit-1",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "api",
+          "format": "url",
+          "env": "API_URL"
+        }
+      ]
+    },
+    "worker": {
+      "root": "apps/worker",
+      "runtime": "container"
     }
   },
   "rewrites": [
@@ -20,26 +33,5 @@
       "source": "/(.*)",
       "destination": { "service": "web" }
     }
-  ],
-  "daemons": {
-    "worker": {
-      "root": "apps/worker",
-      "entrypoint": "Dockerfile",
-      "instances": {
-        "iad1": 1
-      },
-      "resources": {
-        "requests": {
-          "memory": "2Gi"
-        }
-      },
-      "terminationGracePeriodSeconds": 10,
-      "livenessProbe": {
-        "httpGet": {
-          "port": 3001,
-          "path": "/health"
-        }
-      }
-    }
-  }
+  ]
 }

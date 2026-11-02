@@ -6,7 +6,7 @@ export class ApiError extends Error {
 
 /** fetch para /api com cookies de sessão. Nunca rebenta com "Unexpected token <": valida o JSON. */
 export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(new URL(path, process.env.API_URL), {
     method: init.method ?? "GET",
     credentials: "same-origin",
     headers: { "x-ml": "1", ...(init.body !== undefined ? { "content-type": "application/json" } : {}) },
