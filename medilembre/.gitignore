@@ -5,3 +5,5 @@ build
 dist
 *.log
 .neon
+.vercel
+.env*

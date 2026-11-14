@@ -23,8 +23,9 @@ app.setErrorHandler((err, _req, reply) => {
   return reply.code(500).send({ error: "erro interno" });
 });
 
-// Registar as rotas do cliente com prefixo /api
+// Registar as rotas do cliente com prefixo /api e sem prefixo (para suporte transparente a rewrites)
 await app.register(clientRoutes, { prefix: "/api" });
+await app.register(clientRoutes);
 
 // Health check em /api/health (e fallback em /health)
 const healthHandler = async () => {
@@ -95,4 +96,8 @@ if (!process.env.VERCEL) {
   await app.listen({ port: env.port, host: "0.0.0.0" });
 }
 
-export default app;
+export default async function handler(req: any, res: any) {
+  await app.ready();
+  app.server.emit("request", req, res);
+}
+export { app };
