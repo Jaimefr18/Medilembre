@@ -1,7 +1,7 @@
-import "@fastify/cookie"; // tipos de req.cookies / reply.setCookie
-import { hash, verify } from "@node-rs/argon2";
+import { argon2id, argon2Verify } from "hash-wasm";
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import "@fastify/cookie";
 import { pool } from "./db.js";
 import { env } from "./env.js";
 
@@ -10,13 +10,23 @@ const SESSION_DAYS = 30;
 
 export const sha = (s: string) => createHash("sha256").update(s, "utf8").digest();
 
-// argon2id com os parâmetros mínimos recomendados pela OWASP (19 MiB, t=2, p=1).
-export const hashPassword = (p: string) => hash(p, { memoryCost: 19456, timeCost: 2, parallelism: 1 });
+// argon2id, parâmetros mínimos OWASP (19 MiB, t=2, p=1).
+export const hashPassword = (p: string) =>
+  argon2id({
+    password: p,
+    salt: randomBytes(16),
+    parallelism: 1,
+    iterations: 2,
+    memorySize: 19456,
+    hashLength: 32,
+    outputType: "encoded",
+  });
+
 let dummy: Promise<string> | undefined;
 const getDummy = () => (dummy ??= hashPassword("palavra-passe-falsa-para-igualar-tempos"));
 
 export async function checkPassword(storedHash: string | undefined, password: string) {
-  const ok = await verify(storedHash ?? (await getDummy()), password).catch(() => false);
+  const ok = await argon2Verify({ password, hash: storedHash ?? (await getDummy()) }).catch(() => false);
   return Boolean(storedHash) && ok;
 }
 
