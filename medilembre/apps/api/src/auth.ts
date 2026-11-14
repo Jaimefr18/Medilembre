@@ -12,11 +12,11 @@ export const sha = (s: string) => createHash("sha256").update(s, "utf8").digest(
 
 // argon2id com os parâmetros mínimos recomendados pela OWASP (19 MiB, t=2, p=1).
 export const hashPassword = (p: string) => hash(p, { memoryCost: 19456, timeCost: 2, parallelism: 1 });
-const DUMMY = await hashPassword("palavra-passe-falsa-para-igualar-tempos");
+let dummy: Promise<string> | undefined;
+const getDummy = () => (dummy ??= hashPassword("palavra-passe-falsa-para-igualar-tempos"));
 
-/** Tempo de resposta igual exista o utilizador ou não (evita enumeração de contas). */
 export async function checkPassword(storedHash: string | undefined, password: string) {
-  const ok = await verify(storedHash ?? DUMMY, password).catch(() => false);
+  const ok = await verify(storedHash ?? (await getDummy()), password).catch(() => false);
   return Boolean(storedHash) && ok;
 }
 

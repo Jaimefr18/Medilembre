@@ -1,4 +1,4 @@
-import { PushSubscriptionInput, SpikeScheduleInput } from "@medilembre/shared";
+import { PushSubscriptionInput, SpikeScheduleInput } from "./schemas.js";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
@@ -89,4 +89,10 @@ if (!env.production) {
   await app.register(spikeRoutes, { prefix: "/spike" });
 }
 
-await app.listen({ port: env.port, host: "0.0.0.0" });
+await app.ready();
+
+if (!process.env.VERCEL) {
+  await app.listen({ port: env.port, host: "0.0.0.0" });
+}
+
+export default app;

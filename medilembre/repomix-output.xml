@@ -132,6 +132,7 @@ packages/
     tsconfig.json
 scripts/
   db.mjs
+  set-password.mjs
 .biome.json
 .env.example
 .gitignore
@@ -139,10 +140,13 @@ scripts/
 .npmrc
 biome.json
 capacitor.config.ts
+Dockerfile.worker
+neon.ts
 package.json
 pnpm-workspace.yaml
 README.md
 tsconfig.base.json
+vercel.json
 vitest.config.ts
 </directory_structure>
 
@@ -479,7 +483,7 @@ export async function clientRoutes(app: FastifyInstance) {
 import pg from "pg";
 import { env } from "./env.js";
 
-export const pool = new pg.Pool({ connectionString: env.databaseUrl, max: 10 });
+export const pool = new pg.Pool({ connectionString: env.databaseUrl, max: 2 });
 
 /**
  * Corre `fn` numa transação com app.pharmacy_id definido: o RLS filtra tudo por farmácia.
@@ -533,7 +537,7 @@ import { PushSubscriptionInput, SpikeScheduleInput } from "@medilembre/shared";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { clientRoutes } from "./client.js";
 import { pool, withTenant } from "./db.js";
@@ -542,64 +546,9 @@ import { env } from "./env.js";
 // trustProxy em produção: o rate limit tem de ver o IP real atrás do proxy/Cloudflare.
 const app = Fastify({ logger: true, trustProxy: env.production, bodyLimit: 64 * 1024 });
 
-// Sem `await`: assim as rotas herdam o setErrorHandler definido no fim do ficheiro.
 app.register(helmet);
 app.register(cookie);
 app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
-app.register(clientRoutes); // login, lembretes, reservas, push, privacidade
-
-app.get("/health", async () => {
-  await pool.query("select 1");
-  return { ok: true };
-});
-
-// ---------- Guard provisório do painel da farmácia (até haver login de farmácia) ----------
-// Em desenvolvimento aceita o cabeçalho x-pharmacy-id. Em produção recusa tudo.
-const Uuid = z.string().uuid();
-app.get("/customers", async (req, reply) => {
-  if (env.production) return reply.code(501).send({ error: "auth não implementada" });
-  const id = Uuid.safeParse(req.headers["x-pharmacy-id"]);
-  if (!id.success) return reply.code(401).send({ error: "farmácia em falta" });
-  return withTenant(id.data, async (c) => (await c.query("select id, name from customers")).rows);
-});
-
-// ---------- Spike de Web Push (só desenvolvimento: rotas públicas que escrevem na BD) ----------
-if (!env.production) {
-  app.get("/spike/vapid-key", async () => ({ key: env.vapidPublicKey }));
-
-  app.post("/spike/subscribe", async (req) => {
-    const body = PushSubscriptionInput.parse(req.body);
-    await pool.query(
-      `insert into spike_subscriptions (endpoint, p256dh, auth, user_agent) values ($1,$2,$3,$4)
-       on conflict (endpoint) do update set p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent`,
-      [body.endpoint, body.keys.p256dh, body.keys.auth, req.headers["user-agent"] ?? null],
-    );
-    return { ok: true };
-  });
-
-  app.post("/spike/schedule", async (req, reply) => {
-    const body = SpikeScheduleInput.parse(req.body);
-    const r = await pool.query(
-      `insert into spike_jobs (subscription_id, label, due_at)
-       select id, $2, now() + make_interval(mins => $3) from spike_subscriptions where endpoint = $1
-       returning id`,
-      [body.endpoint, body.label ?? `${body.minutes} min`, body.minutes],
-    );
-    if (r.rowCount === 0) return reply.code(404).send({ error: "subscrição desconhecida" });
-    return { ok: true };
-  });
-
-  app.get("/spike/jobs", async (req) => {
-    const { endpoint } = z.object({ endpoint: z.string().url() }).parse(req.query);
-    const r = await pool.query(
-      `select j.label, j.due_at, j.sent_at, j.result from spike_jobs j
-       join spike_subscriptions s on s.id = j.subscription_id
-       where s.endpoint = $1 order by j.due_at desc limit 30`,
-      [endpoint],
-    );
-    return r.rows;
-  });
-}
 
 app.setErrorHandler((err, _req, reply) => {
   if (err instanceof z.ZodError) return reply.code(400).send({ error: err.flatten() });
@@ -608,6 +557,72 @@ app.setErrorHandler((err, _req, reply) => {
   app.log.error(err);
   return reply.code(500).send({ error: "erro interno" });
 });
+
+// Registar as rotas do cliente com prefixo /api
+await app.register(clientRoutes, { prefix: "/api" });
+
+// Health check em /api/health (e fallback em /health)
+const healthHandler = async () => {
+  await pool.query("select 1");
+  return { ok: true };
+};
+app.get("/api/health", healthHandler);
+app.get("/health", healthHandler);
+
+// ---------- Guard provisório do painel da farmácia (até haver login de farmácia) ----------
+// Em desenvolvimento aceita o cabeçalho x-pharmacy-id. Em produção recusa tudo.
+const Uuid = z.string().uuid();
+const getCustomers = async (req: FastifyRequest, reply: FastifyReply) => {
+  if (env.production) return reply.code(501).send({ error: "auth não implementada" });
+  const id = Uuid.safeParse(req.headers["x-pharmacy-id"]);
+  if (!id.success) return reply.code(401).send({ error: "farmácia em falta" });
+  return withTenant(id.data, async (c) => (await c.query("select id, name from customers")).rows);
+};
+app.get("/api/customers", getCustomers);
+app.get("/customers", getCustomers);
+
+// ---------- Spike de Web Push (só desenvolvimento: rotas públicas que escrevem na BD) ----------
+if (!env.production) {
+  const spikeRoutes = async (sub: FastifyInstance) => {
+    sub.get("/vapid-key", async () => ({ key: env.vapidPublicKey }));
+
+    sub.post("/subscribe", async (req) => {
+      const body = PushSubscriptionInput.parse(req.body);
+      await pool.query(
+        `insert into spike_subscriptions (endpoint, p256dh, auth, user_agent) values ($1,$2,$3,$4)
+         on conflict (endpoint) do update set p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent`,
+        [body.endpoint, body.keys.p256dh, body.keys.auth, req.headers["user-agent"] ?? null],
+      );
+      return { ok: true };
+    });
+
+    sub.post("/schedule", async (req, reply) => {
+      const body = SpikeScheduleInput.parse(req.body);
+      const r = await pool.query(
+        `insert into spike_jobs (subscription_id, label, due_at)
+         select id, $2, now() + make_interval(mins => $3) from spike_subscriptions where endpoint = $1
+         returning id`,
+        [body.endpoint, body.label ?? `${body.minutes} min`, body.minutes],
+      );
+      if (r.rowCount === 0) return reply.code(404).send({ error: "subscrição desconhecida" });
+      return { ok: true };
+    });
+
+    sub.get("/jobs", async (req) => {
+      const { endpoint } = z.object({ endpoint: z.string().url() }).parse(req.query);
+      const r = await pool.query(
+        `select j.label, j.due_at, j.sent_at, j.result from spike_jobs j
+         join spike_subscriptions s on s.id = j.subscription_id
+         where s.endpoint = $1 order by j.due_at desc limit 30`,
+        [endpoint],
+      );
+      return r.rows;
+    });
+  };
+
+  await app.register(spikeRoutes, { prefix: "/api/spike" });
+  await app.register(spikeRoutes, { prefix: "/spike" });
+}
 
 await app.listen({ port: env.port, host: "0.0.0.0" });
 </file>
@@ -659,6 +674,7 @@ describe.skipIf(!hasDb)("isolamento por farmácia (RLS)", () => {
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "build": "tsc --noEmit",
     "start": "tsx --env-file=../../.env src/index.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -733,22 +749,32 @@ describe.skipIf(!hasDb)("isolamento por farmácia (RLS)", () => {
 
 <file path="apps/web/src/lib/api.ts">
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
     super(message);
   }
 }
 
 /** fetch para /api com cookies de sessão. Nunca rebenta com "Unexpected token <": valida o JSON. */
-export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T = unknown>(
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: init.method ?? "GET",
     credentials: "same-origin",
-    headers: { "x-ml": "1", ...(init.body !== undefined ? { "content-type": "application/json" } : {}) },
+    headers: {
+      "x-ml": "1",
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+    },
     body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
   });
   const isJson = (res.headers.get("content-type") ?? "").includes("json");
   const data = isJson ? await res.json() : null;
-  if (!isJson) throw new ApiError(res.status, "O servidor não respondeu como esperado (proxy /api em falta?)");
+  if (!isJson)
+    throw new ApiError(res.status, "O servidor não respondeu como esperado (proxy /api em falta?)");
   if (!res.ok) {
     const e = (data as { error?: unknown })?.error;
     throw new ApiError(res.status, typeof e === "string" ? e : "Dados inválidos");
@@ -1733,7 +1759,6 @@ export function showToast(msg: string) {
 
 <file path="apps/web/src/routes/+layout.ts">
 export const ssr = false;
-export const prerender = true;
 </file>
 
 <file path="apps/web/src/app.css">
@@ -1931,7 +1956,7 @@ import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
 export default {
   preprocess: vitePreprocess(),
-  kit: { adapter: adapter({ fallback: "index.html" }) },
+  kit: { adapter: adapter({ fallback: "404.html" }) },
 };
 </file>
 
@@ -1951,11 +1976,9 @@ export default defineConfig({
   server: {
     allowedHosts: ['.trycloudflare.com'],
     proxy: {
-      // front chama /api/x -> Fastify recebe /x (o Fastify não tem prefixo /api)
       '/api': {
         target: 'http://localhost:3000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },
@@ -1966,11 +1989,25 @@ export default defineConfig({
 </file>
 
 <file path="apps/worker/src/index.ts">
+import { createServer } from "node:http";
 import { NOTIFICATION_TEXT } from "@medilembre/shared";
 import pg from "pg";
 import PgBoss from "pg-boss";
 import webpush from "web-push";
 import { enqueueDue, sendPending } from "./reminders.js";
+
+// Health check simples para o livenessProbe da Daemon
+let alive = true;
+
+createServer((req, res) => {
+  if (req.url === "/health") {
+    res.statusCode = alive ? 200 : 500;
+    res.end();
+  } else {
+    res.statusCode = 404;
+    res.end();
+  }
+}).listen(3001, "0.0.0.0");
 
 // O worker usa o utilizador admin: precisa de ver todas as farmácias (superuser/BYPASSRLS, ignora RLS).
 const url = process.env.DATABASE_URL_ADMIN ?? "";
@@ -2036,6 +2073,29 @@ await boss.work("tick", async () => {
   }
 });
 console.log("worker ativo: tick de 1 em 1 minuto");
+
+let shuttingDown = false;
+
+const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  alive = false; // faz o health check falhar para não receber novos pedidos
+  console.log(`${signal} recebido, a encerrar...`);
+  try {
+    await boss.stop({ graceful: true, timeout: 5000 });
+  } catch (e) {
+    console.error("pg-boss stop error", e);
+  }
+  try {
+    await pool.end();
+  } catch (e) {
+    console.error("pool end error", e);
+  }
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 </file>
 
 <file path="apps/worker/src/reminders.test.ts">
@@ -2266,7 +2326,8 @@ export async function sendPending(pool: pg.Pool, at: Date = new Date()) {
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
-    "start": "tsx --env-file=../../.env src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -2281,7 +2342,15 @@ export async function sendPending(pool: pg.Pool, at: Date = new Date()) {
 </file>
 
 <file path="apps/worker/tsconfig.json">
-{ "extends": "../../tsconfig.base.json", "include": ["src"] }
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}
 </file>
 
 <file path="db/migrations/0001_init.sql">
@@ -2809,6 +2878,133 @@ try {
 }
 </file>
 
+<file path="scripts/set-password.mjs">
+// Uso: node --env-file=.env scripts/set-password.mjs [identificador|--all] [senha]
+import pg from "pg";
+
+let argon2;
+try {
+  argon2 = await import("@node-rs/argon2");
+} catch {
+  argon2 = await import("../apps/api/node_modules/@node-rs/argon2/index.js");
+}
+
+function normIdentifier(raw) {
+  const s = raw.trim().toLowerCase();
+  if (s.includes("@")) return s;
+  const d = s.replace(/\D/g, "");
+  return d.length === 9 ? `244${d}` : d;
+}
+
+const client = new pg.Client({ connectionString: process.env.DATABASE_URL_ADMIN });
+await client.connect();
+
+try {
+  const [target, newPassword] = process.argv.slice(2);
+
+  if (!target) {
+    console.log("MediLembre · Gestor de Senhas de Utentes (Argon2id)");
+    console.log("--------------------------------------------------");
+    console.log("Uso:");
+    console.log(
+      "  node --env-file=.env scripts/set-password.mjs <identificador|telefone|nome> <nova-senha>",
+    );
+    console.log("  node --env-file=.env scripts/set-password.mjs --all <nova-senha>\n");
+    console.log("Utilizadores atuais na base de dados:");
+
+    const query = `
+      select 
+        c.id as customer_id,
+        c.name,
+        c.phone,
+        p.name as pharmacy,
+        cl.identifier,
+        cl.password_hash is not null as has_password
+      from customers c
+      join pharmacies p on p.id = c.pharmacy_id
+      left join customer_logins cl on cl.customer_id = c.id
+      order by c.name
+    `;
+    const res = await client.query(query);
+    console.table(res.rows);
+    process.exit(0);
+  }
+
+  if (!newPassword || newPassword.length < 8) {
+    console.error("Erro: A senha deve ter pelo menos 8 caracteres.");
+    process.exit(1);
+  }
+
+  const hash = await argon2.hash(newPassword, {
+    memoryCost: 19456,
+    timeCost: 2,
+    parallelism: 1,
+  });
+
+  if (target === "--all") {
+    const customers = (
+      await client.query("select id, pharmacy_id, phone, email, name from customers")
+    ).rows;
+
+    for (const c of customers) {
+      const identifier = c.email ? normIdentifier(c.email) : normIdentifier(c.phone ?? "");
+      if (!identifier) continue;
+
+      await client.query(
+        `insert into customer_logins (customer_id, pharmacy_id, identifier, password_hash)
+         values ($1, $2, $3, $4)
+         on conflict (customer_id) do update 
+         set identifier = excluded.identifier, password_hash = excluded.password_hash`,
+        [c.id, c.pharmacy_id, identifier, hash],
+      );
+      console.log(`✓ Senha atualizada para ${c.name} (identificador: ${identifier})`);
+    }
+    console.log("\nTodas as senhas foram redefinidas com sucesso!");
+    console.log(`Nova senha para todos: ${newPassword}`);
+    process.exit(0);
+  }
+
+  // Pesquisar por identificador normalizado, telefone ou nome aproximado
+  const norm = normIdentifier(target);
+  const found = await client.query(
+    `select c.id, c.pharmacy_id, c.name, c.phone, c.email
+     from customers c
+     left join customer_logins cl on cl.customer_id = c.id
+     where cl.identifier = $1 
+        or c.phone = $2 
+        or c.phone = $1
+        or lower(c.name) like '%' || lower($3) || '%'
+     limit 1`,
+    [norm, target, target],
+  );
+
+  if (!found.rows[0]) {
+    console.error(`Erro: Nenhum utente encontrado com o identificador/telefone/nome: "${target}"`);
+    process.exit(1);
+  }
+
+  const customer = found.rows[0];
+  const finalIdentifier = customer.email
+    ? normIdentifier(customer.email)
+    : normIdentifier(customer.phone ?? norm);
+
+  await client.query(
+    `insert into customer_logins (customer_id, pharmacy_id, identifier, password_hash)
+     values ($1, $2, $3, $4)
+     on conflict (customer_id) do update 
+     set identifier = excluded.identifier, password_hash = excluded.password_hash`,
+    [customer.id, customer.pharmacy_id, finalIdentifier, hash],
+  );
+
+  console.log(`✓ Senha redefinida com sucesso para ${customer.name}!`);
+  console.log(`  Identificador para login: ${finalIdentifier}`);
+  console.log(`  Nova senha: ${newPassword}`);
+  console.log(`  Hash Argon2id: ${hash}`);
+} finally {
+  await client.end();
+}
+</file>
+
 <file path=".biome.json">
 {
   "$schema": "https://biomejs.dev/schemas/1.6.1/schema.json",
@@ -2837,6 +3033,7 @@ node_modules
 build
 dist
 *.log
+.neon
 </file>
 
 <file path=".node-version">
@@ -2845,6 +3042,7 @@ dist
 
 <file path=".npmrc">
 block-exotic-subdeps=false
+ignore-workspace-root-check=true
 </file>
 
 <file path="biome.json">
@@ -2883,6 +3081,57 @@ const config: CapacitorConfig = {
 export default config;
 </file>
 
+<file path="Dockerfile.worker">
+FROM node:22-slim AS base
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+WORKDIR /app
+
+# Copiar os manifestos do workspace
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY apps/worker/package.json ./apps/worker/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/core/package.json ./packages/core/
+
+# Instalar dependências (incluindo dev para compilar)
+RUN pnpm install --frozen-lockfile
+
+# Copiar o código fonte
+COPY apps/worker/src ./apps/worker/src
+COPY packages/shared/src ./packages/shared/src
+COPY packages/core/src ./packages/core/src
+COPY tsconfig.base.json ./
+COPY apps/worker/tsconfig.json ./apps/worker/
+
+# Compilar TypeScript
+RUN pnpm --filter @medilembre/worker exec tsc
+
+# Comando de arranque: executar o JavaScript compilado
+CMD ["node", "apps/worker/dist/index.js"]
+</file>
+
+<file path="neon.ts">
+import { defineConfig } from "@neon/config/v1";
+
+export default defineConfig({
+  // Declare your Neon services here
+  auth: false,
+  // Branch policy: per-branch tuning
+  branch: (branch) => {
+    if (branch.isDefault) {
+      // Default branch: no overrides, uses project defaults
+      return {};
+    }
+    if (!branch.exists) {
+      // New non-default branches: auto-expire
+      // Run `neon checkout <name>` to create a new branch with these settings
+      return { ttl: "7d" };
+    }
+    // Existing branch: no changes
+    return {};
+  },
+});
+</file>
+
 <file path="package.json">
 {
   "name": "medilembre",
@@ -2898,6 +3147,7 @@ export default config;
     "db:down": "docker compose -f infra/docker-compose.yml down",
     "db:migrate": "node --env-file=.env scripts/db.mjs migrate",
     "db:seed": "node --env-file=.env scripts/db.mjs seed",
+    "password:set": "node --env-file=.env scripts/set-password.mjs",
     "vapid": "pnpm --filter @medilembre/worker exec web-push generate-vapid-keys",
     "lint": "biome check .",
     "format": "biome check --write .",
@@ -2916,7 +3166,9 @@ export default config;
   "dependencies": {
     "@capacitor/android": "^8.5.2",
     "@capacitor/core": "^8.5.2",
-    "@capacitor/local-notifications": "^8.3.1"
+    "@capacitor/local-notifications": "^8.3.1",
+    "@neon/config": "^1.13.0",
+    "@neon/env": "^2.1.0"
   }
 }
 </file>
@@ -2981,6 +3233,48 @@ por isso o atraso mínimo é até 60 s.
     "isolatedModules": true,
     "types": ["node"]
   }
+}
+</file>
+
+<file path="vercel.json">
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "api": {
+      "root": "apps/api",
+      "framework": "fastify",
+      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/api...",
+      "buildCommand": "pnpm build"
+    },
+    "web": {
+      "root": "apps/web",
+      "framework": "sveltekit-1",
+      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/web...",
+      "buildCommand": "pnpm build",
+      "outputDirectory": "build",
+      "rewrites": [
+        {
+          "source": "/(.*)",
+          "destination": "/404.html"
+        }
+      ]
+    },
+    "worker": {
+      "root": ".",
+      "runtime": "container",
+      "entrypoint": "Dockerfile.worker"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": { "service": "api" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "web" }
+    }
+  ]
 }
 </file>
 

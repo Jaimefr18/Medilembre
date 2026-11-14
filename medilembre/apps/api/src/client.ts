@@ -1,4 +1,4 @@
-import { PushSubscriptionInput } from "@medilembre/shared";
+import { PushSubscriptionInput } from "./schemas.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type pg from "pg";
 import { z } from "zod";

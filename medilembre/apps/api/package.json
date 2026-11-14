@@ -13,7 +13,6 @@
     "@fastify/cookie": "^11.1.2",
     "@fastify/helmet": "^13.1.1",
     "@fastify/rate-limit": "^11.2.0",
-    "@medilembre/core": "workspace:*",
     "@medilembre/shared": "workspace:*",
     "@node-rs/argon2": "^2.2.1",
     "fastify": "^5.2.0",
