@@ -4,13 +4,13 @@
     "api": {
       "root": "apps/api",
       "framework": "fastify",
-      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/api... --filter medilembre",
+      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --prod=false --filter @medilembre/api... --filter medilembre",
       "buildCommand": "pnpm build"
     },
     "web": {
       "root": "apps/web",
       "framework": "sveltekit-1",
-      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/web...",
+      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --prod=false --filter @medilembre/web...",
       "buildCommand": "pnpm build",
       "outputDirectory": "build",
       "rewrites": [
