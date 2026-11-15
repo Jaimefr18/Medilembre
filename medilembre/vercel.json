@@ -4,7 +4,7 @@
     "api": {
       "root": "apps/api",
       "framework": "fastify",
-      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/api...",
+      "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter @medilembre/api... --filter medilembre",
       "buildCommand": "pnpm build"
     },
     "web": {
