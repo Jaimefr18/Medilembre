@@ -1,10 +1,17 @@
-import { PushSubscriptionInput } from "./schemas.js";
+import { PushSubscriptionInput } from "@medilembre/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
 import {
-  checkPassword, csrfGuard, endSession, hashPassword, normCode, normIdentifier,
-  requireCustomer, sha, startSession,
+  checkPassword,
+  csrfGuard,
+  endSession,
+  hashPassword,
+  normCode,
+  normIdentifier,
+  requireCustomer,
+  sha,
+  startSession,
 } from "./auth.js";
 import { pool, withTenant, withTx } from "./db.js";
 import { env } from "./env.js";
@@ -14,8 +21,16 @@ const TODAY = `(now() at time zone '${TZ}')::date`;
 
 const Id = z.object({ id: z.string().uuid() });
 const Password = z.string().min(8, "mínimo 8 caracteres").max(128);
-const Identifier = z.string().trim().min(5).max(120).transform(normIdentifier)
-  .refine((s) => s.includes("@") ? /^\S+@\S+\.\S+$/.test(s) : /^\d{9,15}$/.test(s), "telemóvel ou email inválido");
+const Identifier = z
+  .string()
+  .trim()
+  .min(5)
+  .max(120)
+  .transform(normIdentifier)
+  .refine(
+    (s) => (s.includes("@") ? /^\S+@\S+\.\S+$/.test(s) : /^\d{9,15}$/.test(s)),
+    "telemóvel ou email inválido",
+  );
 
 const LoginInput = z.object({ identifier: Identifier, password: z.string().min(1).max(128) });
 const ActivateInput = z.object({
@@ -23,11 +38,29 @@ const ActivateInput = z.object({
   identifier: Identifier,
   password: Password,
 });
-const ReminderInput = z.object({
-  name: z.string().trim().min(1).max(80),
-  dose: z.string().trim().max(80).default(""),
-  time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-});
+
+const Ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const Hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const ReminderInput = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    dose: z.string().trim().max(80).default(""),
+    times: z
+      .array(Hhmm)
+      .min(1)
+      .max(6)
+      .refine((a) => new Set(a).size === a.length, "horas repetidas"),
+    startDate: Ymd,
+    endDate: Ymd.nullable().default(null),
+  })
+  .refine((v) => !v.endDate || v.endDate >= v.startDate, "o fim é anterior ao início");
+
+const todayLuanda = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
+
+const COLS = `r.id, to_char(r.at_time,'HH24:MI') as time, r.name, r.dose,
+  r.start_date::text as "startDate", r.end_date::text as "endDate",
+  (r.start_date <= ${TODAY} and (r.end_date is null or r.end_date >= ${TODAY})) as live,
+  exists (select 1 from dose_logs d where d.reminder_id = r.id and d.day = ${TODAY}) as done`;
 
 /** Corre `fn` com o RLS preso à farmácia E ao cliente da sessão. */
 const mine = <T>(req: FastifyRequest, fn: (c: pg.PoolClient, customerId: string) => Promise<T>) =>
@@ -49,18 +82,23 @@ export async function clientRoutes(app: FastifyInstance) {
       );
       if (!code.rows[0]) return null;
       const { customer_id, pharmacy_id } = code.rows[0];
-      const taken = await c.query("select 1 from customer_logins where identifier = $1", [b.identifier]);
+      const taken = await c.query("select 1 from customer_logins where identifier = $1", [
+        b.identifier,
+      ]);
       if (taken.rowCount) return "taken" as const;
       await c.query(
         "insert into customer_logins (customer_id, pharmacy_id, identifier, password_hash) values ($1,$2,$3,$4)",
         [customer_id, pharmacy_id, b.identifier, await hashPassword(b.password)],
       );
-      await c.query("update activation_codes set used_at = now() where code_hash = $1", [sha(b.code)]);
+      await c.query("update activation_codes set used_at = now() where code_hash = $1", [
+        sha(b.code),
+      ]);
       await startSession(c, reply, customer_id, pharmacy_id, req.headers["user-agent"]);
       return { customer_id, pharmacy_id };
     });
     if (out === null) return reply.code(400).send({ error: "código inválido ou expirado" });
-    if (out === "taken") return reply.code(409).send({ error: "esse contacto já tem conta; use Entrar" });
+    if (out === "taken")
+      return reply.code(409).send({ error: "esse contacto já tem conta; use Entrar" });
     return { ok: true };
   });
 
@@ -96,32 +134,51 @@ export async function clientRoutes(app: FastifyInstance) {
 
     // Lembretes
     s.get("/reminders", async (req) =>
-      mine(req, async (c, id) =>
-        (await c.query(
-          `select r.id, to_char(r.at_time,'HH24:MI') as time, r.name, r.dose,
-                  exists (select 1 from dose_logs d where d.reminder_id = r.id and d.day = ${TODAY}) as done
-           from client_reminders r where r.customer_id = $1 and r.active order by r.at_time`,
-          [id],
-        )).rows,
+      mine(
+        req,
+        async (c, id) =>
+          (
+            await c.query(
+              `select ${COLS} from client_reminders r
+           where r.customer_id = $1 and r.active and (r.end_date is null or r.end_date >= ${TODAY})
+           order by r.at_time`,
+              [id],
+            )
+          ).rows,
       ),
     );
 
-    s.post("/reminders", async (req) => {
+    s.post("/reminders", async (req, reply) => {
       const b = ReminderInput.parse(req.body);
-      return mine(req, async (c, id) =>
-        (await c.query(
-          `insert into client_reminders (pharmacy_id, customer_id, name, dose, at_time)
-           values ($1,$2,$3,$4,$5)
-           returning id, to_char(at_time,'HH24:MI') as time, name, dose, false as done`,
-          [req.me!.pharmacyId, id, b.name, b.dose, b.time],
-        )).rows[0],
+      if (b.startDate < todayLuanda())
+        return reply.code(400).send({ error: "a data de início já passou" });
+      return mine(
+        req,
+        async (c, id) =>
+          (
+            await c.query(
+              `with ins as (
+             insert into client_reminders (pharmacy_id, customer_id, name, dose, at_time, start_date, end_date)
+             select $1::uuid, $2::uuid, $3, $4, t, $6::date, $7::date from unnest($5::time[]) t
+             returning *)
+           select ${COLS} from ins r order by r.at_time`,
+              [req.me!.pharmacyId, id, b.name, b.dose, b.times, b.startDate, b.endDate],
+            )
+          ).rows,
       );
     });
 
     s.delete("/reminders/:id", async (req, reply) => {
       const { id } = Id.parse(req.params);
-      const n = await mine(req, async (c, cid) =>
-        (await c.query("delete from client_reminders where id = $1 and customer_id = $2", [id, cid])).rowCount,
+      const n = await mine(
+        req,
+        async (c, cid) =>
+          (
+            await c.query("delete from client_reminders where id = $1 and customer_id = $2", [
+              id,
+              cid,
+            ])
+          ).rowCount,
       );
       return n ? { ok: true } : reply.code(404).send({ error: "lembrete não encontrado" });
     });
@@ -130,7 +187,10 @@ export async function clientRoutes(app: FastifyInstance) {
     s.post("/reminders/:id/take", async (req, reply) => {
       const { id } = Id.parse(req.params);
       const found = await mine(req, async (c, cid) => {
-        const r = await c.query("select 1 from client_reminders where id = $1 and customer_id = $2", [id, cid]);
+        const r = await c.query(
+          "select 1 from client_reminders where id = $1 and customer_id = $2",
+          [id, cid],
+        );
         if (!r.rowCount) return false;
         await c.query(
           `insert into dose_logs (pharmacy_id, reminder_id, customer_id, day)
@@ -144,18 +204,25 @@ export async function clientRoutes(app: FastifyInstance) {
 
     // Reservas
     s.get("/products", async (req) =>
-      mine(req, async (c) =>
-        (await c.query("select id, name, pack from pharmacy_products where active order by name")).rows,
+      mine(
+        req,
+        async (c) =>
+          (await c.query("select id, name, pack from pharmacy_products where active order by name"))
+            .rows,
       ),
     );
 
     s.get("/reservations", async (req) =>
-      mine(req, async (c, id) =>
-        (await c.query(
-          `select product_id, status from client_reservations
+      mine(
+        req,
+        async (c, id) =>
+          (
+            await c.query(
+              `select product_id, status from client_reservations
            where customer_id = $1 and status in ('pendente','confirmada') order by created_at desc`,
-          [id],
-        )).rows,
+              [id],
+            )
+          ).rows,
       ),
     );
 
@@ -169,7 +236,9 @@ export async function clientRoutes(app: FastifyInstance) {
           [productId, id],
         ),
       );
-      return r.rowCount ? { ok: true } : reply.code(409).send({ error: "produto indisponível ou já pedido" });
+      return r.rowCount
+        ? { ok: true }
+        : reply.code(409).send({ error: "produto indisponível ou já pedido" });
     });
 
     // Push (ligado ao cliente autenticado)
@@ -183,7 +252,14 @@ export async function clientRoutes(app: FastifyInstance) {
            values ($1,$2,$3,$4,$5,$6)
            on conflict (endpoint) do update
              set p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent`,
-          [req.me!.pharmacyId, id, b.endpoint, b.keys.p256dh, b.keys.auth, req.headers["user-agent"] ?? null],
+          [
+            req.me!.pharmacyId,
+            id,
+            b.endpoint,
+            b.keys.p256dh,
+            b.keys.auth,
+            req.headers["user-agent"] ?? null,
+          ],
         ),
       );
       return { ok: true };
@@ -192,7 +268,10 @@ export async function clientRoutes(app: FastifyInstance) {
     s.delete("/push/subscribe", async (req) => {
       const { endpoint } = z.object({ endpoint: z.string().url() }).parse(req.body);
       await mine(req, async (c, id) =>
-        c.query("delete from client_push_subscriptions where endpoint = $1 and customer_id = $2", [endpoint, id]),
+        c.query("delete from client_push_subscriptions where endpoint = $1 and customer_id = $2", [
+          endpoint,
+          id,
+        ]),
       );
       return { ok: true };
     });
@@ -204,9 +283,15 @@ export async function clientRoutes(app: FastifyInstance) {
         return {
           exportedAt: new Date().toISOString(),
           customer: (await q("select name from customers where id = $1"))[0],
-          reminders: await q("select name, dose, at_time from client_reminders where customer_id = $1"),
-          doseLogs: await q("select reminder_id, day, taken_at from dose_logs where customer_id = $1"),
-          reservations: await q("select product_id, status, created_at from client_reservations where customer_id = $1"),
+          reminders: await q(
+            "select name, dose, at_time from client_reminders where customer_id = $1",
+          ),
+          doseLogs: await q(
+            "select reminder_id, day, taken_at from dose_logs where customer_id = $1",
+          ),
+          reservations: await q(
+            "select product_id, status, created_at from client_reservations where customer_id = $1",
+          ),
         };
       }),
     );
@@ -214,10 +299,18 @@ export async function clientRoutes(app: FastifyInstance) {
     s.delete("/me", async (req, reply) => {
       const { customerId } = req.me!;
       await mine(req, async (c, id) => {
-        for (const t of ["client_push_subscriptions", "dose_logs", "client_reservations", "client_reminders"]) {
+        for (const t of [
+          "client_push_subscriptions",
+          "dose_logs",
+          "client_reservations",
+          "client_reminders",
+        ]) {
           await c.query(`delete from ${t} where customer_id = $1`, [id]);
         }
-        await c.query("update customers set name = '(removido)' where id = $1", [id]);
+        await c.query(
+          "update customers set name = '(removido)', phone = null, email = null where id = $1",
+          [id],
+        );
       });
       await pool.query("delete from client_sessions where customer_id = $1", [customerId]);
       await pool.query("delete from customer_logins where customer_id = $1", [customerId]);

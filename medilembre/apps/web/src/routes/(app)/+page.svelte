@@ -3,7 +3,7 @@
   import Head from "$lib/Head.svelte";
   import Icon from "$lib/Icon.svelte";
   import Tag from "$lib/Tag.svelte";
-  import { data, doneCount, nextReminder, reservationOf, reserve, sorted, take } from "$lib/data.svelte";
+  import { data, doneCount, nextReminder, reservationOf, reserve, todayList, take } from "$lib/data.svelte";
   import { session } from "$lib/session.svelte";
   import { dateParts, hello, rel } from "$lib/time.svelte";
 
@@ -13,7 +13,7 @@
   const first = $derived(data.products[0]);
 </script>
 
-<div class="scr">
+<div class="scr fixed">
   <Head />
   <h1 style="font-size:32px">{hello()}, {session.name}</h1>
   <p class="mut" style="font-size:16px">Um lembrete de cada vez. Vamos lá?</p>
@@ -33,17 +33,17 @@
     </div>
   {:else}
     <div class="next c">
-      <b>{data.reminders.length ? "Tudo tomado por hoje" : "Ainda não tem lembretes"}</b>
-      <p class="mut" style="font-size:15px">{data.reminders.length ? "Bom trabalho, até amanhã." : "Adicione o primeiro abaixo."}</p>
+      <b>{todayList().length ? "Tudo tomado por hoje" : "Ainda não tem lembretes"}</b>
+      <p class="mut" style="font-size:15px">{todayList().length ? "Bom trabalho, até amanhã." : "Adicione o primeiro abaixo."}</p>
     </div>
   {/if}
 
   <div class="row"><h2>Hoje, {day}</h2><span class="mut" style="font-size:14px">{weekday}</span></div>
-  <div class="prog"><i style="width:{data.reminders.length ? (doneCount() / data.reminders.length) * 100 : 0}%"></i></div>
-  <div class="mut" style="text-align:right;font-size:13px;margin:-8px 0 8px">{doneCount()} de {data.reminders.length} tomados</div>
+  <div class="prog"><i style="width:{todayList().length ? (doneCount() / todayList().length) * 100 : 0}%"></i></div>
+  <div class="mut" style="text-align:right;font-size:13px;margin:-8px 0 8px">{doneCount()} de {todayList().length} tomados</div>
 
-  <div class="list">
-    {#each sorted() as r (r.id)}
+  <div class="panel list">
+    {#each todayList() as r (r.id)}
       <div class="it" class:on={r.id === n?.id}>
         <time>{r.time}</time>
         <div class="m"><b>{r.name}</b><span class="s">{r.dose || "—"}</span></div>

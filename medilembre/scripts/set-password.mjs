@@ -1,12 +1,7 @@
 // Uso: node --env-file=.env scripts/set-password.mjs [identificador|--all] [senha]
+import { randomBytes } from "node:crypto";
+import { argon2id } from "hash-wasm";
 import pg from "pg";
-
-let argon2;
-try {
-  argon2 = await import("@node-rs/argon2");
-} catch {
-  argon2 = await import("../apps/api/node_modules/@node-rs/argon2/index.js");
-}
 
 function normIdentifier(raw) {
   const s = raw.trim().toLowerCase();
@@ -54,10 +49,14 @@ try {
     process.exit(1);
   }
 
-  const hash = await argon2.hash(newPassword, {
-    memoryCost: 19456,
-    timeCost: 2,
+  const hash = await argon2id({
+    password: newPassword,
+    salt: randomBytes(16),
     parallelism: 1,
+    iterations: 2,
+    memorySize: 19456,
+    hashLength: 32,
+    outputType: "encoded",
   });
 
   if (target === "--all") {

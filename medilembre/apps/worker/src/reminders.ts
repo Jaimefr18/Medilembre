@@ -22,6 +22,8 @@ export async function enqueueDue(pool: pg.Pool, at: Date = new Date()): Promise<
      cross join lateral (select (($1::timestamptz at time zone p.timezone)::date - o) as day) d
      cross join lateral (select ((d.day + r.at_time) at time zone p.timezone) as due_at) x
      where r.active
+       and d.day >= r.start_date
+       and (r.end_date is null or d.day <= r.end_date)
        and x.due_at <= $1::timestamptz
        and x.due_at >  $1::timestamptz - interval '${CATCH_UP}'
        and r.created_at <= x.due_at

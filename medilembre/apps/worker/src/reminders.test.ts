@@ -25,14 +25,14 @@ describe.skipIf(!url)("enqueueDue (worker)", () => {
     ).rows[0].id;
     reminderId = (
       await pool.query(
-        `insert into client_reminders (pharmacy_id, customer_id, name, at_time, created_at)
-         values ($1, $2, 'Teste worker', '08:00', '2026-01-01') returning id`,
+        `insert into client_reminders (pharmacy_id, customer_id, name, at_time, created_at, start_date)
+         values ($1, $2, 'Teste worker', '08:00', '2026-01-01', '2026-01-01') returning id`,
         [ALFA, customerId],
       )
     ).rows[0].id;
   });
   afterAll(async () => {
-    await pool.query("delete from client_reminders where id = $1", [reminderId]); // cascata limpa sends e logs
+    if (reminderId) await pool.query("delete from client_reminders where id = $1", [reminderId]); // cascata limpa sends e logs
     await pool.end();
   });
 

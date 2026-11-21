@@ -19,12 +19,10 @@
           "destination": "/404.html"
         }
       ]
-    },
-    "worker": {
-      "root": ".",
-      "runtime": "container",
-      "entrypoint": "Dockerfile.worker"
     }
+  },
+  "daemons": {
+    "worker": { "root": ".", "entrypoint": "Dockerfile.worker", "instances": { "iad1": 1 } }
   },
   "rewrites": [
     {

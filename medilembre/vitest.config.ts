@@ -6,5 +6,7 @@ export default defineConfig({
     env: loadEnv("test", process.cwd(), ""),
     include: ["**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/.svelte-kit/**"],
+    testTimeout: 20000,
+    hookTimeout: 30000,
   },
 });

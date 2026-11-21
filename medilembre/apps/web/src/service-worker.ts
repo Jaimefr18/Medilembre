@@ -10,12 +10,14 @@ const SHELL = [...build, ...files];
 
 sw.addEventListener("install", (e) => {
   e.waitUntil(
-    caches
-      .open(CACHE)
-      .then((c) => c.addAll(SHELL))
-      .then(() => sw.skipWaiting()),
+    caches.open(CACHE).then(async (c) => {
+      await c.addAll(SHELL);
+      await c.add("/404.html").catch(() => {}); // shell SPA (fallback do adapter-static)
+      await sw.skipWaiting();
+    }),
   );
 });
+
 sw.addEventListener("activate", (e) => {
   e.waitUntil(
     caches
@@ -24,25 +26,58 @@ sw.addEventListener("activate", (e) => {
       .then(() => sw.clients.claim()),
   );
 });
-// Casca em cache; a API vai sempre à rede.
+
 sw.addEventListener("fetch", (e) => {
-  const url = new URL(e.request.url);
-  if (e.request.method !== "GET" || url.pathname.startsWith("/api")) return;
-  e.respondWith(caches.match(e.request).then((hit) => hit ?? fetch(e.request)));
+  const { request } = e;
+  const url = new URL(request.url);
+  if (
+    request.method !== "GET" ||
+    url.origin !== sw.location.origin ||
+    url.pathname.startsWith("/api")
+  )
+    return;
+  e.respondWith(
+    (async () => {
+      const hit = await caches.match(request);
+      if (hit) return hit;
+      try {
+        return await fetch(request);
+      } catch (err) {
+        if (request.mode === "navigate") {
+          const shell = await caches.match("/404.html");
+          if (shell) return shell;
+        }
+        throw err;
+      }
+    })(),
+  );
 });
 
-// Notificação discreta no ecrã bloqueado.
 sw.addEventListener("push", (e) => {
-  const d = e.data?.json() ?? { title: "MediLembre", body: "Hora do seu lembrete" };
+  let d: { title?: string; body?: string; tag?: string; url?: string } = {};
+  try {
+    d = e.data?.json() ?? {};
+  } catch {}
   e.waitUntil(
-    sw.registration.showNotification(d.title, {
-      body: d.body,
+    sw.registration.showNotification(d.title ?? "MediLembre", {
+      body: d.body ?? "Hora do seu lembrete",
       icon: "/icon.svg",
-      tag: "lembrete",
+      badge: "/icon.svg",
+      tag: d.tag ?? "lembrete",
+      renotify: true,
+      requireInteraction: true,
+      data: { url: d.url ?? "/" },
     } as NotificationOptions),
   );
 });
+
 sw.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  e.waitUntil(sw.clients.openWindow("/"));
+  const url = (e.notification.data as { url?: string })?.url ?? "/";
+  e.waitUntil(
+    sw.clients.matchAll({ type: "window", includeUncontrolled: true }).then((all) => {
+      const w = all[0];
+      return w ? w.focus() : sw.clients.openWindow(url);
+    }),
+  );
 });

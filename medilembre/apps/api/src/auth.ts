@@ -1,6 +1,6 @@
-import { argon2id, argon2Verify } from "hash-wasm";
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { argon2Verify, argon2id } from "hash-wasm";
 import "@fastify/cookie";
 import { pool } from "./db.js";
 import { env } from "./env.js";
@@ -26,7 +26,9 @@ let dummy: Promise<string> | undefined;
 const getDummy = () => (dummy ??= hashPassword("palavra-passe-falsa-para-igualar-tempos"));
 
 export async function checkPassword(storedHash: string | undefined, password: string) {
-  const ok = await argon2Verify({ password, hash: storedHash ?? (await getDummy()) }).catch(() => false);
+  const ok = await argon2Verify({ password, hash: storedHash ?? (await getDummy()) }).catch(
+    () => false,
+  );
   return Boolean(storedHash) && ok;
 }
 

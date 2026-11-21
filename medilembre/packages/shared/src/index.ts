@@ -13,14 +13,5 @@ export const PushSubscriptionInput = z.object({
   keys: z.object({ p256dh: z.string(), auth: z.string() }),
 });
 
-export const SpikeScheduleInput = z.object({
-  endpoint: z.string().url(),
-  minutes: z
-    .number()
-    .min(0)
-    .max(24 * 60),
-  label: z.string().max(80).optional(),
-});
-
 // Notificação discreta: o detalhe só aparece ao abrir a app.
 export const NOTIFICATION_TEXT = { title: "MediLembre", body: "Hora do seu lembrete" } as const;

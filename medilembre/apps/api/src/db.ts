@@ -16,10 +16,10 @@ export async function withTenant<T>(
     // app.customer_id = "" (customerId undefined) significa "painel da farmácia": a política restritiva
     // own_customer usa nullif(current_setting('app.customer_id', true), '') is null para deixar passar
     // a farmácia inteira. Com customerId definido, o cliente só vê as suas próprias linhas.
-    await c.query("select set_config('app.pharmacy_id', $1, true), set_config('app.customer_id', $2, true)", [
-      pharmacyId,
-      customerId ?? "",
-    ]);
+    await c.query(
+      "select set_config('app.pharmacy_id', $1, true), set_config('app.customer_id', $2, true)",
+      [pharmacyId, customerId ?? ""],
+    );
     return fn(c);
   });
 }

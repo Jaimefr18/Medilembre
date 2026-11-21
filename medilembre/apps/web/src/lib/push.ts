@@ -3,7 +3,12 @@ import { api } from "./api";
 export type PushState = "granted" | "denied" | "default" | "unsupported";
 
 export function pushState(): PushState {
-  if (typeof window === "undefined" || !("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+  if (
+    typeof window === "undefined" ||
+    !("Notification" in window) ||
+    !("serviceWorker" in navigator) ||
+    !("PushManager" in window)
+  ) {
     return "unsupported";
   }
   return Notification.permission;
@@ -21,9 +26,19 @@ export async function enablePush(): Promise<PushState> {
   if ((await Notification.requestPermission()) !== "granted") return Notification.permission;
   const reg = await navigator.serviceWorker.ready;
   const { key } = await api<{ key: string }>("/push/vapid-key");
-  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(key) });
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: b64(key),
+  });
   await api("/push/subscribe", { method: "POST", body: sub.toJSON() });
   return "granted";
+}
+
+export async function ensurePush() {
+  if (pushState() !== "granted") return;
+  try {
+    await enablePush();
+  } catch {}
 }
 
 /** No logout: remove a subscrição deste dispositivo (best-effort). */

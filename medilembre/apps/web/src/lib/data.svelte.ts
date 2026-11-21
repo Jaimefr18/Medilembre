@@ -1,8 +1,17 @@
 import { api, isOffline } from "./api";
-import { showToast } from "./toast.svelte";
 import { syncAlarms } from "./local-notifications";
+import { showToast } from "./toast.svelte";
 
-export type Reminder = { id: string; time: string; name: string; dose: string; done: boolean };
+export type Reminder = {
+  id: string;
+  time: string;
+  name: string;
+  dose: string;
+  done: boolean;
+  startDate: string;
+  endDate: string | null;
+  live: boolean;
+};
 export type Product = { id: string; name: string; pack: string };
 export type Reservation = { product_id: string; status: string };
 
@@ -25,7 +34,14 @@ export const data = $state({
 
 const persist = () => {
   try {
-    localStorage.setItem(CACHE, JSON.stringify({ reminders: data.reminders, products: data.products, reservations: data.reservations }));
+    localStorage.setItem(
+      CACHE,
+      JSON.stringify({
+        reminders: data.reminders,
+        products: data.products,
+        reservations: data.reservations,
+      }),
+    );
   } catch {}
 };
 
@@ -48,8 +64,9 @@ export async function loadAll() {
 }
 
 export const sorted = () => data.reminders.slice().sort((a, b) => a.time.localeCompare(b.time));
-export const nextReminder = () => sorted().find((r) => !r.done);
-export const doneCount = () => data.reminders.filter((r) => r.done).length;
+export const todayList = () => sorted().filter((r) => r.live);
+export const nextReminder = () => todayList().find((r) => !r.done);
+export const doneCount = () => todayList().filter((r) => r.done).length;
 
 export async function take(id: string) {
   const r = data.reminders.find((x) => x.id === id);
@@ -58,6 +75,7 @@ export async function take(id: string) {
   try {
     await api(`/reminders/${id}/take`, { method: "POST" });
     persist();
+    await syncAlarms(data.reminders);
     showToast(`Registado: ${r.name} tomado`);
   } catch (e) {
     r.done = false;
@@ -65,9 +83,15 @@ export async function take(id: string) {
   }
 }
 
-export async function addReminder(input: { name: string; dose: string; time: string }) {
-  const created = await api<Reminder>("/reminders", { method: "POST", body: input });
-  data.reminders.push(created);
+export async function addReminders(input: {
+  name: string;
+  dose: string;
+  times: string[];
+  startDate: string;
+  endDate: string | null;
+}) {
+  const created = await api<Reminder[]>("/reminders", { method: "POST", body: input });
+  data.reminders.push(...created);
   persist();
   await syncAlarms(data.reminders);
 }
@@ -79,7 +103,8 @@ export async function removeReminder(id: string) {
   await syncAlarms(data.reminders);
 }
 
-export const reservationOf = (productId: string) => data.reservations.find((r) => r.product_id === productId);
+export const reservationOf = (productId: string) =>
+  data.reservations.find((r) => r.product_id === productId);
 
 export async function reserve(productId: string) {
   try {

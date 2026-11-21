@@ -5,16 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js",
+    "build": "tsc --noEmit",
+    "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@medilembre/shared": "workspace:*",
-    "@medilembre/core": "workspace:*",
     "pg": "^8.13.1",
-    "pg-boss": "^10.1.5",
+    "tsx": "^4.19.2",
     "web-push": "^3.6.7"
   },
-  "devDependencies": { "@types/pg": "^8.11.10", "@types/web-push": "^3.6.4", "tsx": "^4.19.2" }
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "@types/web-push": "^3.6.4"
+  }
 }

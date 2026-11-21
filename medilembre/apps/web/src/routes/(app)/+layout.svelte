@@ -4,6 +4,7 @@
   import Icon from "$lib/Icon.svelte";
   import Nav from "$lib/Nav.svelte";
   import { loadAll } from "$lib/data.svelte";
+  import { ensurePush } from "$lib/push";
   import { loadSession, session } from "$lib/session.svelte";
   import { setupAlarms } from "$lib/local-notifications";
 
@@ -15,7 +16,13 @@
     const minSplash = new Promise((r) => setTimeout(r, splash ? 1500 : 0));
     await loadSession();
     if (session.status === "out") return goto("/entrar", { replaceState: true });
-    await Promise.all([loadAll(), minSplash, setupAlarms()]);
+    await Promise.all([
+      loadAll().then(() => {
+        void ensurePush();
+      }),
+      minSplash,
+      setupAlarms(),
+    ]);
     sessionStorage.removeItem("ml:splash");
     splash = false;
   });
