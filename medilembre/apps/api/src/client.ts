@@ -1,4 +1,4 @@
-import { PushSubscriptionInput } from "@medilembre/shared";
+import { DateYmd, PushSubscriptionInput, ReminderInput } from "@medilembre/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
@@ -39,21 +39,7 @@ const ActivateInput = z.object({
   password: Password,
 });
 
-const Ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const Hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
-const ReminderInput = z
-  .object({
-    name: z.string().trim().min(1).max(80),
-    dose: z.string().trim().max(80).default(""),
-    times: z
-      .array(Hhmm)
-      .min(1)
-      .max(6)
-      .refine((a) => new Set(a).size === a.length, "horas repetidas"),
-    startDate: Ymd,
-    endDate: Ymd.nullable().default(null),
-  })
-  .refine((v) => !v.endDate || v.endDate >= v.startDate, "o fim é anterior ao início");
+const Ymd = DateYmd;
 
 const todayLuanda = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
 

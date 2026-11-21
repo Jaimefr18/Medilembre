@@ -36,6 +36,25 @@ const healthHandler = async () => {
 app.get("/api/health", healthHandler);
 app.get("/health", healthHandler);
 
+// Verificação de segurança: garantir que em produção a API corre com medilembre_app (RLS ativo)
+if (env.databaseUrl) {
+  void pool
+    .query("select current_user")
+    .then(({ rows }) => {
+      const u = rows[0]?.current_user;
+      if (env.production && u !== "medilembre_app") {
+        app.log.error(
+          `[SEGURANÇA CRÍTICA] DATABASE_URL ligada como '${u}' em produção! O utilizador DEVE ser 'medilembre_app' para garantir isolamento por RLS.`,
+        );
+      } else {
+        app.log.info(
+          `[DB] Ligação ativa como utilizador '${u}' (RLS isolado: ${u === "medilembre_app"})`,
+        );
+      }
+    })
+    .catch((err) => app.log.error(err, "[DB] Erro ao verificar utilizador da base de dados"));
+}
+
 // ---------- Guard provisório do painel da farmácia (até haver login de farmácia) ----------
 // Em desenvolvimento aceita o cabeçalho x-pharmacy-id. Em produção recusa tudo.
 const Uuid = z.string().uuid();
