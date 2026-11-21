@@ -3,12 +3,21 @@ import pg from "pg";
 import webpush from "web-push";
 import { enqueueDue, sendPending } from "./reminders.js";
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL_ADMIN, max: 3 });
-webpush.setVapidDetails(
-  process.env.VAPID_SUBJECT ?? "mailto:admin@example.com",
-  process.env.VAPID_PUBLIC_KEY ?? "",
-  process.env.VAPID_PRIVATE_KEY ?? "",
-);
+const connectionString = process.env.DATABASE_URL_ADMIN ?? process.env.DATABASE_URL_UNPOOLED;
+if (!connectionString) {
+  console.error("ERRO: DATABASE_URL_ADMIN ou DATABASE_URL_UNPOOLED não está configurada.");
+}
+const pool = new pg.Pool({ connectionString, max: 3 });
+
+const vapidSubject = process.env.VAPID_SUBJECT ?? "mailto:admin@example.com";
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY ?? "";
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY ?? "";
+
+if (!vapidPublicKey || !vapidPrivateKey) {
+  console.warn("AVISO: VAPID_PUBLIC_KEY ou VAPID_PRIVATE_KEY em falta. Notificações web-push desativadas temporariamente.");
+} else {
+  webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+}
 
 let lastTick = Date.now();
 let running = false;

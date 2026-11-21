@@ -3,7 +3,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import pg from "pg";
 
 const cmd = process.argv[2];
-const client = new pg.Client({ connectionString: process.env.DATABASE_URL_ADMIN });
+const client = new pg.Client({
+  connectionString: process.env.DATABASE_URL_ADMIN ?? process.env.DATABASE_URL_UNPOOLED,
+});
 await client.connect();
 try {
   if (cmd === "migrate") {

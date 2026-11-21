@@ -2,7 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { enqueueDue } from "./reminders.js";
 
-const url = process.env.DATABASE_URL_ADMIN;
+const url = process.env.DATABASE_URL_ADMIN ?? process.env.DATABASE_URL_UNPOOLED;
 const ALFA = "11111111-1111-1111-1111-111111111111";
 
 // Luanda = UTC+1: 08:00 local = 07:00Z. Precisa de `pnpm db:migrate && pnpm db:seed`.

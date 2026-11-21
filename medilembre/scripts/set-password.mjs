@@ -10,7 +10,9 @@ function normIdentifier(raw) {
   return d.length === 9 ? `244${d}` : d;
 }
 
-const client = new pg.Client({ connectionString: process.env.DATABASE_URL_ADMIN });
+const client = new pg.Client({
+  connectionString: process.env.DATABASE_URL_ADMIN ?? process.env.DATABASE_URL_UNPOOLED,
+});
 await client.connect();
 
 try {
