@@ -17,7 +17,9 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "vitest run"
+    "test": "vitest run",
+    "pharmacy:create": "node --env-file=.env scripts/create-pharmacy.mjs",
+    "android:setup": "node scripts/android-setup.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
@@ -31,5 +33,14 @@
   "dependencies": {
     "@capacitor/android": "^8.5.2",
     "hash-wasm": "^4.11.0"
-  }
+  },
+  "version": "1.0.0",
+  "description": "PWA + API + worker + PostgreSQL (RLS por farm\u00e1cia). Ver `docs/` e o plano de 28 dias.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }

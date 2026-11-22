@@ -5,6 +5,8 @@
   import { api } from "$lib/api";
   import { clearLocal, session } from "$lib/session.svelte";
   import { disablePush, enablePush, pushState, type PushState } from "$lib/push";
+  import { allowAlarms, alarmStatus, testAlarm, type AlarmStatus } from "$lib/local-notifications";
+  import { onMount } from "svelte";
   import { showToast } from "$lib/toast.svelte";
 
   const isNative = Capacitor.isNativePlatform();
@@ -16,6 +18,27 @@
     default: "Ainda não ativadas",
     unsupported: "Não suportadas neste navegador",
   };
+
+  let alarm = $state<AlarmStatus | null>(null);
+  onMount(async () => {
+    alarm = await alarmStatus();
+  });
+
+  async function allow() {
+    await allowAlarms();
+    alarm = await alarmStatus();
+  }
+
+  async function test() {
+    try {
+      const r = await testAlarm();
+      showToast(
+        r === "native" ? "O teste toca daqui a 3 segundos" : r === "web" ? "Teste enviado" : r === "denied" ? "Permita as notificações primeiro" : "Este navegador não suporta notificações",
+      );
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  }
 
   async function activate() {
     try {
@@ -72,6 +95,24 @@
       </div>
     </div>
   {/if}
+
+  <div class="box">
+    <b>Toque dos lembretes</b>
+    {#if alarm?.native}
+      <div class="mut" style="font-size:14px;margin-top:4px">
+        Notificações: {alarm.notifications === "granted" ? "permitidas" : "não permitidas"} · Alarmes exatos: {alarm.exact === "granted" ? "permitidos" : "não permitidos"}
+      </div>
+      {#if alarm.notifications !== "granted" || alarm.exact !== "granted"}
+        <p class="mut" style="font-size:14px;margin-top:4px">Sem estas permissões o Android pode atrasar ou silenciar o alarme.</p>
+        <button class="sm" style="margin-top:10px" onclick={allow}>Permitir alarmes</button>
+      {/if}
+    {:else}
+      <p class="mut" style="font-size:14px;margin-top:4px">
+        No navegador, o som é o das notificações do telemóvel: confirme que o volume de notificações não está a zero, que o modo Não incomodar está desligado e que as notificações deste site estão em "Alertar" (com som).
+      </p>
+    {/if}
+    <button class="sm" style="margin-top:10px" onclick={test}>Testar toque</button>
+  </div>
 
   <div class="box">
     <b>Privacidade</b>

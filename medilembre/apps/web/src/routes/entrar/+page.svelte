@@ -2,7 +2,6 @@
   import { goto } from "$app/navigation";
   import Icon from "$lib/Icon.svelte";
   import { api } from "$lib/api";
-  import { showToast } from "$lib/toast.svelte";
 
   let identifier = $state("");
   let password = $state("");
@@ -53,7 +52,7 @@
         <button type="button" aria-label="Mostrar senha" onclick={() => (show = !show)}><Icon name="eye" /></button>
       </div>
       <div style="text-align:right;margin:14px 0 18px">
-        <button type="button" class="link" onclick={() => showToast("Peça a recuperação à sua farmácia")}>Esqueci minha senha</button>
+        <a class="link" href="/recuperar">Esqueci minha senha</a>
       </div>
       {#if err}<p class="err" role="alert">{err}</p>{/if}
       <button class="btn" disabled={busy}>Entrar <Icon name="arrow" /></button>

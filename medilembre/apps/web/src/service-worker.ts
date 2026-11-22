@@ -66,6 +66,9 @@ sw.addEventListener("push", (e) => {
       tag: d.tag ?? "lembrete",
       renotify: true,
       requireInteraction: true,
+      silent: false, // som do sistema (o Web Push não permite toque próprio)
+      vibrate: [300, 150, 300, 150, 600],
+      timestamp: Date.now(),
       data: { url: d.url ?? "/" },
     } as NotificationOptions),
   );

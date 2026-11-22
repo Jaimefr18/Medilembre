@@ -32,6 +32,10 @@ const Identifier = z
     "telemóvel ou email inválido",
   );
 
+const ResetInput = z.object({
+  code: z.string().min(4).max(16).transform(normCode),
+  password: Password,
+});
 const LoginInput = z.object({ identifier: Identifier, password: z.string().min(1).max(128) });
 const ActivateInput = z.object({
   code: z.string().min(4).max(16).transform(normCode),
@@ -63,7 +67,7 @@ export async function clientRoutes(app: FastifyInstance) {
     const out = await withTx(async (c) => {
       const code = await c.query(
         `select customer_id, pharmacy_id from activation_codes
-         where code_hash = $1 and used_at is null and expires_at > now() for update`,
+         where code_hash = $1 and kind = 'activate' and used_at is null and expires_at > now() for update`,
         [sha(b.code)],
       );
       if (!code.rows[0]) return null;
@@ -86,6 +90,32 @@ export async function clientRoutes(app: FastifyInstance) {
     if (out === "taken")
       return reply.code(409).send({ error: "esse contacto já tem conta; use Entrar" });
     return { ok: true };
+  });
+
+  // Recuperação de senha: a farmácia gera um código `reset`; o cliente define a senha nova com ele.
+  app.post("/auth/reset", strict, async (req, reply) => {
+    const b = ResetInput.parse(req.body);
+    const ok = await withTx(async (c) => {
+      const code = await c.query(
+        `select customer_id, pharmacy_id from activation_codes
+         where code_hash = $1 and kind = 'reset' and used_at is null and expires_at > now() for update`,
+        [sha(b.code)],
+      );
+      if (!code.rows[0]) return false;
+      const { customer_id, pharmacy_id } = code.rows[0];
+      const upd = await c.query(
+        "update customer_logins set password_hash = $2 where customer_id = $1",
+        [customer_id, await hashPassword(b.password)],
+      );
+      if (!upd.rowCount) return false;
+      await c.query("update activation_codes set used_at = now() where code_hash = $1", [
+        sha(b.code),
+      ]);
+      await c.query("delete from client_sessions where customer_id = $1", [customer_id]); // termina sessões antigas
+      await startSession(c, reply, customer_id, pharmacy_id, req.headers["user-agent"]);
+      return true;
+    });
+    return ok ? { ok: true } : reply.code(400).send({ error: "código inválido ou expirado" });
   });
 
   app.post("/auth/login", strict, async (req, reply) => {

@@ -1,11 +1,12 @@
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify from "fastify";
 import { z } from "zod";
 import { clientRoutes } from "./client.js";
-import { pool, withTenant } from "./db.js";
+import { pool } from "./db.js";
 import { env } from "./env.js";
+import { pharmacyRoutes } from "./farmacia.js";
 
 // trustProxy em produção: o rate limit tem de ver o IP real atrás do proxy/Cloudflare.
 const app = Fastify({ logger: true, trustProxy: env.production, bodyLimit: 64 * 1024 });
@@ -27,6 +28,7 @@ app.setErrorHandler((err, _req, reply) => {
 
 // Registar as rotas do cliente com prefixo /api
 await app.register(clientRoutes, { prefix: "/api" });
+await app.register(pharmacyRoutes, { prefix: "/api/farmacia" });
 
 // Health check em /api/health (e fallback em /health)
 const healthHandler = async () => {
@@ -54,18 +56,6 @@ if (env.databaseUrl) {
     })
     .catch((err) => app.log.error(err, "[DB] Erro ao verificar utilizador da base de dados"));
 }
-
-// ---------- Guard provisório do painel da farmácia (até haver login de farmácia) ----------
-// Em desenvolvimento aceita o cabeçalho x-pharmacy-id. Em produção recusa tudo.
-const Uuid = z.string().uuid();
-const getCustomers = async (req: FastifyRequest, reply: FastifyReply) => {
-  if (env.production) return reply.code(501).send({ error: "auth não implementada" });
-  const id = Uuid.safeParse(req.headers["x-pharmacy-id"]);
-  if (!id.success) return reply.code(401).send({ error: "farmácia em falta" });
-  return withTenant(id.data, async (c) => (await c.query("select id, name from customers")).rows);
-};
-app.get("/api/customers", getCustomers);
-app.get("/customers", getCustomers);
 
 await app.ready();
 
