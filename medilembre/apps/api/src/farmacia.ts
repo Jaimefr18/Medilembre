@@ -41,7 +41,60 @@ declare module "fastify" {
   }
 }
 
-const strict = { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } };
+// Rate limit por identificador: 5 tentativas por 10 min por email.
+// Limite alto por IP (60 tentativas por 10 min) para suportar CGNAT angolano (Unitel/Africell/Movicel),
+// onde dezenas de utilizadores partilham o mesmo endereço IP público.
+const IP_WINDOW_MS = 10 * 60 * 1000;
+const IP_MAX_ATTEMPTS = 60;
+const ipAttempts = new Map<string, { count: number; resetAt: number }>();
+
+export async function ipRateLimitGuard(req: FastifyRequest, reply: FastifyReply) {
+  const ip = req.ip || "unknown";
+  const now = Date.now();
+  const rec = ipAttempts.get(ip);
+  if (!rec || now > rec.resetAt) {
+    if (ipAttempts.size > 5000) {
+      for (const [k, v] of ipAttempts) {
+        if (now > v.resetAt) ipAttempts.delete(k);
+      }
+    }
+    ipAttempts.set(ip, { count: 1, resetAt: now + IP_WINDOW_MS });
+    return;
+  }
+  rec.count += 1;
+  if (rec.count > IP_MAX_ATTEMPTS) {
+    return reply.code(429).send({
+      statusCode: 429,
+      error: "Too Many Requests",
+      message: "Muitas tentativas a partir desta rede. Tente novamente mais tarde.",
+    });
+  }
+}
+
+export function _resetIpRateLimitsForTesting() {
+  ipAttempts.clear();
+}
+
+const loginRateLimit = {
+  preHandler: [ipRateLimitGuard],
+  config: {
+    rateLimit: {
+      max: 5,
+      timeWindow: "10 minutes",
+      hook: "preHandler" as const,
+      keyGenerator: (req: FastifyRequest) => {
+        const b = req.body as { email?: string } | undefined;
+        const email = b?.email?.trim().toLowerCase();
+        return email ? `ph_login:${email}` : `ph_login_ip:${req.ip}`;
+      },
+      errorResponseBuilder: () => ({
+        statusCode: 429,
+        error: "Too Many Requests",
+        message: "Demasiadas tentativas de início de sessão. Tente novamente em 10 minutos.",
+      }),
+    },
+  },
+};
 
 /** O RLS é aplicado pela farmácia da sessão (sem customerId: o painel vê a farmácia toda). */
 const tenant = <T>(req: FastifyRequest, fn: (c: pg.PoolClient) => Promise<T>) =>
@@ -87,7 +140,7 @@ async function issueCode(
 export async function pharmacyRoutes(app: FastifyInstance) {
   app.addHook("onRequest", csrfGuard);
 
-  app.post("/auth/login", strict, async (req, reply) => {
+  app.post("/auth/login", loginRateLimit, async (req, reply) => {
     const b = Login.parse(req.body);
     const r = await pool.query(
       "select id, pharmacy_id, password_hash from pharmacy_users where email = $1",
