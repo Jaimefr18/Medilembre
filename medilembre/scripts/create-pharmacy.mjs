@@ -1,51 +1,80 @@
 // Cria uma farmácia e o seu primeiro utilizador (admin).
-// Uso: node --env-file=.env scripts/create-pharmacy.mjs "Farmácia Central" admin@farmacia.ao "senha-com-8+-caracteres" [NIF] [telefone]
+// Uso: pnpm pharmacy:create "Farmácia Central" admin@farmacia.ao "senha-com-10+-caracteres" [NIF] [telefone]
 import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { argon2id } from "hash-wasm";
 import pg from "pg";
 
-const [name, emailRaw, password, nif, phone] = process.argv.slice(2);
-if (!name || !emailRaw || !password) {
-  console.error('Uso: create-pharmacy.mjs "<nome>" <email> "<senha>" [NIF] [telefone]');
-  process.exit(1);
-}
-if (password.length < 10) {
-  console.error("Erro: a senha da farmácia deve ter pelo menos 10 caracteres.");
-  process.exit(1);
-}
-const email = emailRaw.trim().toLowerCase();
-
-const hash = await argon2id({
+export async function createPharmacy({
+  name,
+  email: emailRaw,
   password,
-  salt: randomBytes(16),
-  parallelism: 1,
-  iterations: 2,
-  memorySize: 19456,
-  hashLength: 32,
-  outputType: "encoded",
-});
+  nif,
+  phone,
+  connectionString = process.env.DATABASE_URL_ADMIN ?? process.env.DATABASE_URL_UNPOOLED,
+}) {
+  if (!name || !emailRaw || !password) {
+    throw new Error('Uso: pnpm pharmacy:create "<nome>" <email> "<senha>" [NIF] [telefone]');
+  }
+  const email = emailRaw.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 120) {
+    throw new Error("Erro: formato de email inválido ou excede 120 caracteres.");
+  }
+  if (password.length < 10) {
+    throw new Error("Erro: a senha da farmácia deve ter pelo menos 10 caracteres.");
+  }
+  if (password.length > 128) {
+    throw new Error("Erro: a senha da farmácia não pode exceder 128 caracteres.");
+  }
 
-const client = new pg.Client({
-  connectionString: process.env.DATABASE_URL_ADMIN ?? process.env.DATABASE_URL_UNPOOLED,
-});
-await client.connect();
-try {
-  await client.query("begin");
-  const p = await client.query(
-    "insert into pharmacies (name, nif, phone) values ($1, $2, $3) returning id",
-    [name, nif ?? null, phone ?? null],
-  );
-  await client.query(
-    "insert into pharmacy_users (pharmacy_id, name, email, role, password_hash) values ($1, $2, $3, 'admin', $4)",
-    [p.rows[0].id, name, email, hash],
-  );
-  await client.query("commit");
-  console.log(`✓ Farmácia criada: ${name} (${p.rows[0].id})`);
-  console.log(`  Entrar em /farmacia/entrar com ${email}`);
-} catch (e) {
-  await client.query("rollback").catch(() => {});
-  console.error("Erro:", e.message);
-  process.exitCode = 1;
-} finally {
-  await client.end();
+  const hash = await argon2id({
+    password,
+    salt: randomBytes(16),
+    parallelism: 1,
+    iterations: 2,
+    memorySize: 19456,
+    hashLength: 32,
+    outputType: "encoded",
+  });
+
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query("begin");
+    const p = await client.query(
+      "insert into pharmacies (name, nif, phone) values ($1, $2, $3) returning id",
+      [name.trim(), nif?.trim() ?? null, phone?.trim() ?? null],
+    );
+    const pharmacyId = p.rows[0].id;
+    await client.query(
+      "insert into pharmacy_users (pharmacy_id, name, email, role, password_hash) values ($1, $2, $3, 'admin', $4)",
+      [pharmacyId, name.trim(), email, hash],
+    );
+    await client.query("commit");
+    return { pharmacyId, name: name.trim(), email, hash };
+  } catch (e) {
+    await client.query("rollback").catch(() => {});
+    if (e.code === "23505") {
+      throw new Error(`Erro: já existe um utilizador registado com o email "${email}".`);
+    }
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
+
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
+  const [name, emailRaw, password, nif, phone] = process.argv.slice(2);
+  try {
+    const res = await createPharmacy({ name, email: emailRaw, password, nif, phone });
+    console.log(`✓ Farmácia criada: ${res.name} (${res.pharmacyId})`);
+    console.log(`  Entrar em /farmacia/entrar com ${res.email}`);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
 }
